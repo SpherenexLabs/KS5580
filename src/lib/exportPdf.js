@@ -41,7 +41,7 @@ const percentage = v => Number.isFinite(v) ? `${Math.round(v)}%` : 'Unavailable'
 function header(pdf, state, title, number) {
   pdf.page();
   pdf.rect(0, 0, 595, 82, [0.08, 0.18, 0.29]);
-  pdf.text(38, 32, 'SPHERENEX | Battery Performance Report', 18, true, [1, 1, 1]);
+  pdf.text(38, 32, 'Battery Performance Report', 18, true, [1, 1, 1]);
   pdf.text(38, 57, title, 11, false, [0.75, 0.89, 0.92]);
   pdf.text(38, 105, `Generated: ${new Date().toLocaleString()} | ${state.mode === 'demo' ? 'DEMO DATA' : 'LIVE TELEMETRY'}`, 9);
   pdf.text(38, 126, 'Pack specification: 14 cells | 24V nominal | 4400mAh', 10);

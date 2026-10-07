@@ -9,7 +9,8 @@ const unavailableState = () => ({
   ...createInitialState(), mode: 'firebase', connection: 'connecting',
   cells: Array(14).fill(null), relays: Array(14).fill(null), soc: null,
   weakCells: [], history: [], cycles: [], events: [], direction: 'S',
-  current: null, led: false, routes: [], automatic: true, balancing: false,
+  current: null, chargingVoltage: null, socStatus: 'UNKNOWN', sodStatus: 'UNKNOWN',
+  led: false, routes: [], automatic: true, balancing: false,
   chargingStatus: 'Unknown', vehicle: { connected: false, status: 'Unknown' }
 });
 

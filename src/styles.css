@@ -71,7 +71,9 @@ h1, h2, p { margin: 0; }
 .metric .blue-track span { background: #149bc6; }
 .balance-metric strong { color: var(--teal-dark); }
 .balance-metric .metric-icon { color: #00a695; }
-.health-metric strong { font-size: clamp(22px, 1.9vw, 31px); padding-top: 3px; white-space: nowrap; }
+.health-metric { overflow: hidden; }
+.health-metric strong { max-width: 100%; padding-top: 3px; font-size: clamp(19px,1.45vw,26px); line-height: 1.08; white-space: normal; overflow-wrap: break-word; }
+.health-metric p { line-height: 1.25; }
 .health-metric .metric-icon { color: #00a695; }
 .movement-metric .metric-icon { color: #2878c7; }
 .movement-metric strong { display: flex; align-items: center; gap: 8px; min-height: 42px; font-size: clamp(18px,1.45vw,25px); white-space: nowrap; }
@@ -80,6 +82,13 @@ h1, h2, p { margin: 0; }
 .movement-metric.moving strong span { background: #00aa96; animation: movement-pulse 1.2s ease-in-out infinite; }
 .movement-metric.stopped strong span { border-radius: 8px; }
 @keyframes movement-pulse { 50% { transform: scale(1.1); box-shadow: 0 0 0 7px #00aa9619; } }
+.electrical-status { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 1px; margin: 0 0 12px; overflow: hidden; border: 1px solid var(--border); border-radius: 11px; background: var(--border); box-shadow: 0 4px 20px #6586a704; }
+.electrical-status>div { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 13px 16px; background: #fff; }
+.electrical-status p { min-width: 0; }
+.electrical-status label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .25px; text-transform: uppercase; }
+.electrical-status strong { display: block; overflow: hidden; color: #1c3b55; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.electrical-status .dot { flex: 0 0 auto; width: 11px; height: 11px; }
+.status-symbol { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; color: #fff; border-radius: 8px; background: #2878c7; font-size: 13px; font-weight: 800; }
 .warning-metric { border-color: #ffebc9; background: linear-gradient(110deg,#fff,#fffaf1); }
 .warning-metric strong, .warning-metric .metric-icon { color: #e69a00; }
 .warning-metric p { color: #b45d00; }
@@ -301,7 +310,7 @@ h1, h2, p { margin: 0; }
   .metric h2 { font-size: 13px; }
   .metric .metric-icon { width: 27px; }
   .metric strong { font-size: 35px; }
-  .health-metric strong { font-size: 25px; }
+  .health-metric strong { font-size: 22px; }
   .health-metric p { font-size: 12px; }
   .cell-tile { padding: 9px 8px; }
   .cell-name { font-size: 11px; }
@@ -377,7 +386,7 @@ h1, h2, p { margin: 0; }
   .oled { font-size: 12px; }
   .local-displays label { font-size: 11px; }
   .expanded-grid { grid-template-columns: repeat(4,minmax(0,1fr)); }
-  .health-metric strong { font-size: 21px; }
+  .health-metric strong { font-size: 20px; }
   .metric h2 { font-size: 12px; }
   .metric .metric-icon { width: 22px; }
   .metric { gap: 8px; }
@@ -397,8 +406,9 @@ h1, h2, p { margin: 0; }
   .metric { min-height: 112px; padding: 16px 19px; gap: 16px; }
   .metric h2 { font-size: 14px; }
   .metric .metric-icon { width: 29px; }
-  .health-metric strong { font-size: 26px; }
+  .health-metric strong { font-size: 23px; }
   .movement-metric strong { font-size: 22px; }
+  .electrical-status { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .cell-tile { padding: 12px 10px; }
   .cell-tile strong { font-size: 21px; }
   .cell-tile strong small { font-size: 17px; }
@@ -551,6 +561,8 @@ h1, h2, p { margin: 0; }
   .cell-dialog .panel { padding: 10px; }
   .dialog-top h2 { font-size: 19px; }
   .toast { bottom: 13px; right: 13px; font-size: 12px; gap: 8px; }
+  .electrical-status { grid-template-columns: 1fr; }
+  .electrical-status>div { padding: 11px 13px; }
 }
 @media (max-width: 360px) {
   .cell-grid, .expanded-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }

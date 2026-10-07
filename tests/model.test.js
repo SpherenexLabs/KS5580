@@ -97,12 +97,15 @@ test('PDF handles unavailable telemetry without presenting NaN values', () => {
   assert.doesNotMatch(text,/NaN|Infinity/);
 });
 
-test('Firebase voltage and relay keys map in numeric order instead of lexicographic order', () => {
+test('Firebase voltage, relay, current and charge-state keys map correctly', () => {
   const Voltage={}, Relay={};
   for(let i=1;i<=14;i++){Voltage[`V${i}`]=i===10?3.4:3.8;Relay[`Relay${i}`]=1;}
-  const state=firebaseSnapshotToTelemetry({Voltage,Relay,Vehicle:{Direction:'L'}},{automatic:true});
+  const state=firebaseSnapshotToTelemetry({Voltage,Relay,Current:0.74369,ChargingVoltage:12.4,SOC_Status:'NOT CHARGING',SOD_Status:'IDLE',Vehicle:{Direction:'L'}},{automatic:true});
   assert.equal(state.cells[9],3.4); assert.equal(state.relays[13],1);
   assert.deepEqual(state.weakCells,[10]); assert.equal(state.direction,'L');
+  assert.equal(state.current,0.74369); assert.equal(state.chargingVoltage,12.4);
+  assert.equal(state.socStatus,'NOT CHARGING'); assert.equal(state.sodStatus,'IDLE');
+  assert.equal(state.chargingStatus,'Idle');
 });
 
 test('relay automation cuts low cells, restores recovered cells, and holds in hysteresis band', () => {

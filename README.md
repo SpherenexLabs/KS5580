@@ -43,6 +43,10 @@ The supplied Firebase web configuration is in `src/lib/firebaseRtdb.js`. The das
 ```text
 BMS_5580/Voltage/V1 ... V14
 BMS_5580/Relay/Relay1 ... Relay14
+BMS_5580/Current
+BMS_5580/ChargingVoltage
+BMS_5580/SOC_Status
+BMS_5580/SOD_Status
 BMS_5580/Vehicle/Direction
 BMS_5580/Vehicle/Routes/{routeId}
 ```

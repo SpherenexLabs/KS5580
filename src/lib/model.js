@@ -13,7 +13,8 @@ export function createInitialState(now = Date.now()) {
     weakCells: [8], chargingStatus: 'Discharging',
     protection: { overvoltage: false, undervoltage: false, shortCircuit: false, cutoff: false },
     vehicle: { connected: true, status: 'Stationary' }, direction: 'S',
-    relays: Array(14).fill(0), routes: [], current: 0, led: false,
+    relays: Array(14).fill(0), routes: [], current: 0, chargingVoltage: 0,
+    socStatus: 'NOT CHARGING', sodStatus: 'IDLE', led: false,
     history, events: [{ time: now, text: 'Automatic balancing enabled', kind: 'info' }],
     cycles: [
       { id: '01', date: new Date(now - 86400000 * 2).toISOString(), health: 'Normal', weakCells: [], min: 3.55, max: 4.17, charge: 96, discharge: 105 },

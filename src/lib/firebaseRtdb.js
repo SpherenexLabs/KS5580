@@ -139,12 +139,21 @@ export function firebaseSnapshotToTelemetry(data, previous = {}) {
   const weakCells = cells.flatMap((value, index) => Number.isFinite(value) && value < LOW_VOLTAGE ? [index + 1] : []);
   const currentValue = Number(data?.Current);
   const current = Number.isFinite(currentValue) ? currentValue : null;
+  const chargingVoltageValue = Number(data?.ChargingVoltage);
+  const chargingVoltage = Number.isFinite(chargingVoltageValue) ? chargingVoltageValue : null;
+  const cleanStatus = value => typeof value === 'string' && value.trim() ? value.trim().slice(0, 60).toUpperCase() : 'UNKNOWN';
+  const socStatus = cleanStatus(data?.SOC_Status);
+  const sodStatus = cleanStatus(data?.SOD_Status);
+  const chargingStatus = socStatus === 'CHARGING' ? 'Charging'
+    : sodStatus === 'DISCHARGING' ? 'Discharging'
+      : socStatus !== 'UNKNOWN' || sodStatus !== 'UNKNOWN' ? 'Idle'
+        : current === null || Math.abs(current) < 0.05 ? 'Idle' : current > 0 ? 'Charging' : 'Discharging';
   const direction = ['F', 'B', 'L', 'R', 'S'].includes(String(data?.Vehicle?.Direction || '').toUpperCase())
     ? String(data.Vehicle.Direction).toUpperCase() : 'S';
   const status = { F: 'Moving forward', B: 'Moving backward', L: 'Turning left', R: 'Turning right', S: 'Stationary' }[direction];
   return {
-    cells, relays, soc, weakCells, current, led: Number(data?.LED) === 1,
-    chargingStatus: current === null || Math.abs(current) < 0.05 ? 'Idle' : current > 0 ? 'Charging' : 'Discharging',
+    cells, relays, soc, weakCells, current, chargingVoltage, socStatus, sodStatus, led: Number(data?.LED) === 1,
+    chargingStatus,
     protection: { overvoltage: cells.some(value => Number.isFinite(value) && value > 4.25), undervoltage: weakCells.length > 0, shortCircuit: false, cutoff: relays.some(relayIsOff) },
     direction,
     vehicle: { connected: true, status },
