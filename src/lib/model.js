@@ -11,6 +11,7 @@ export function createInitialState(now = Date.now()) {
     mode: 'demo', connection: 'connected', updatedAt: now,
     cells: [...INITIAL_VOLTAGES], soc: 78, automatic: true, balancing: true,
     weakCells: [8], chargingStatus: 'Discharging',
+    batteryOk: false, batteryStatus: 'Attention', zeroVoltageCells: [], lowVoltageCells: [], overVoltageCells: [],
     protection: { overvoltage: false, undervoltage: false, shortCircuit: false, cutoff: false },
     vehicle: { connected: true, status: 'Stationary' }, direction: 'S',
     relays: Array(14).fill(0), routes: [], current: 0, chargingVoltage: 0,
@@ -84,7 +85,9 @@ export const socLabel = soc => `${Math.round(soc)}%`;
 export const cellSpread = cells => Math.max(...cells) - Math.min(...cells);
 
 export function getAlerts(state) {
-  const alerts = state.weakCells.map(number => ({ id: `weak-${number}`, kind: 'warning', title: `Weak cell detected: ${cellLabel(number)}`, detail: 'Abnormal voltage behavior. Inspect and replace if required.' }));
+  const zeroCells = state.zeroVoltageCells || [];
+  const alerts = state.weakCells.filter(number => !zeroCells.includes(number)).map(number => ({ id: `weak-${number}`, kind: 'warning', title: `Weak cell detected: ${cellLabel(number)}`, detail: 'Abnormal voltage behavior. Inspect and replace if required.' }));
+  for (const number of zeroCells) alerts.unshift({ id: `zero-${number}`, kind: 'danger', title: `No voltage: ${cellLabel(number)}`, detail: `0 V detected. Relay ${number} is forced OFF for safety.` });
   const names = { overvoltage: 'Overvoltage detected', undervoltage: 'Undervoltage detected', shortCircuit: 'Short circuit detected', cutoff: 'Automatic cutoff active' };
   for (const key of Object.keys(names)) if (state.protection[key]) alerts.unshift({ id: key, kind: 'danger', title: names[key], detail: 'Battery protection is active. Check the battery system.' });
   if (state.mode !== 'demo' && state.connection !== 'connected') alerts.unshift({ id: 'connection', kind: 'warning', title: 'Live telemetry unavailable', detail: 'Displayed readings may be stale. Firebase commands are disabled until telemetry resumes.' });

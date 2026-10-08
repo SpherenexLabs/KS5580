@@ -6,7 +6,7 @@ import Cells3D from './components/Cells3D.jsx';
 import useBattery from './lib/useBattery.js';
 import { cellLabel, cellSpread, getAlerts } from './lib/model.js';
 import { downloadReport } from './lib/exportPdf.js';
-import { LOW_VOLTAGE, RECOVERY_VOLTAGE, relayIsOff, relayIsOn } from './lib/firebaseRtdb.js';
+import { LOW_VOLTAGE, RECOVERY_VOLTAGE, relayIsOff, relayIsOn, voltageToSoc } from './lib/firebaseRtdb.js';
 
 const NAV = [
   ['overview','home','Overview'], ['cells','cells','Cell Monitoring'], ['balancing','balance','Relay Control'],
@@ -27,13 +27,14 @@ function Legend({ color, children }) { return <span className="legend"><span sty
 function CellGrid({ state, onSelect, expanded = false }) {
   return <div className={`cell-grid ${expanded ? 'expanded-grid' : ''}`}>
     {state.cells.map((v,i) => {
-      const weak = state.weakCells.includes(i+1), known = Number.isFinite(v);
-      const level = known ? Math.max(0, Math.min(100, (v / 4.2) * 100)) : 0;
-      return <button className={`cell-tile ${weak ? 'weak' : ''}`} key={i} onClick={()=>onSelect(i+1)} aria-label={`View ${cellLabel(i+1)}, ${known ? v.toFixed(2)+' volts' : 'unavailable'}, ${weak ? 'weak' : known ? 'normal' : 'unknown'}`}>
+      const zero = state.zeroVoltageCells?.includes(i+1), weak = state.weakCells.includes(i+1), known = Number.isFinite(v);
+      const level = voltageToSoc(v) ?? 0;
+      const status = zero ? 'No voltage' : weak ? 'Weak' : known ? 'OK' : 'Unknown';
+      return <button className={`cell-tile ${zero ? 'zero' : weak ? 'weak' : ''}`} key={i} onClick={()=>onSelect(i+1)} aria-label={`View ${cellLabel(i+1)}, ${known ? v.toFixed(2)+' volts' : 'unavailable'}, ${status}`}>
         <span className="cell-name">{cellLabel(i+1)}</span>
         <strong>{known ? v.toFixed(2) : '—'} <small>V</small></strong>
         <span className="mini-track"><span style={{width:`${level}%`}}/></span>
-        <span className="cell-status">{weak ? 'Weak' : known ? 'Normal' : 'Unknown'}</span>
+        <span className="cell-status">{status}</span>
         {expanded && <span className="cell-link">View history <Icon name="chevron" size={12}/></span>}
       </button>;
     })}
@@ -42,8 +43,13 @@ function CellGrid({ state, onSelect, expanded = false }) {
 
 function CellWarning({ state, onSelect }) {
   if (!state.weakCells.length) return null;
+  const zeroCells = state.zeroVoltageCells || [];
+  const weakCells = state.weakCells.filter(number => !zeroCells.includes(number));
+  const message = zeroCells.length
+    ? `${zeroCells.map(cellLabel).join(', ')}: 0 V detected; matching relay forced OFF.${weakCells.length ? ` Also inspect ${weakCells.map(cellLabel).join(', ')}.` : ''}`
+    : `${state.weakCells.map(cellLabel).join(', ')}: abnormal voltage behavior. Inspect and replace if required.`;
   return <button className="warning-strip" onClick={()=>onSelect(state.weakCells[0])}>
-    <Icon name="alert" size={18}/><span>{state.weakCells.map(cellLabel).join(', ')}: abnormal voltage behavior. Inspect and replace if required.</span>
+    <Icon name="alert" size={18}/><span>{message}</span>
   </button>;
 }
 
@@ -61,12 +67,12 @@ function RelayControls({ state, setAutomation, busy, large = false }) {
       <div className="balance-options">
         <p className="charging-status">Charging status: <strong>{state.chargingStatus}</strong></p>
         <div className="switch-row"><span>Automatic low-voltage control</span><button type="button" role="switch" aria-checked={state.automatic} aria-label="Automatic low-voltage relay control" disabled={disabled} className={`switch ${state.automatic ? 'on' : ''}`} onClick={()=>setAutomation(!state.automatic)}><span/></button></div>
-        <p className="threshold-note">Below {LOW_VOLTAGE.toFixed(2)} V → OFF = 1 · At {RECOVERY_VOLTAGE.toFixed(2)} V → ON = 0</p>
+        <p className="threshold-note">0 V → always OFF = 1 · Below {LOW_VOLTAGE.toFixed(2)} V → OFF · At {RECOVERY_VOLTAGE.toFixed(2)} V → ON</p>
         <div className="remote-label">Firebase relay status {busy && <span>· Sending…</span>}</div>
         <p className="control-status"><span className={`dot ${state.connection==='connected'?'green':'red'}`}/>{onCount} of 14 relays ON</p>
       </div>
     </div>
-    {large && <div className="relay-grid">{state.relays.map((value,index)=><div className={`relay-chip ${relayIsOn(value)?'on':relayIsOff(value)?'off':'unknown'}`} key={index}><span>Relay {index+1}</span><strong>{relayIsOn(value)?'ON':relayIsOff(value)?'OFF':'—'}</strong><small>{Number.isFinite(state.cells[index])?`${state.cells[index].toFixed(2)} V · value ${value}`:'No voltage'}</small></div>)}</div>}
+    {large && <div className="relay-grid">{state.relays.map((value,index)=><div className={`relay-chip ${relayIsOn(value)?'on':relayIsOff(value)?'off':'unknown'}`} key={index}><span>Relay {index+1}</span><strong>{relayIsOn(value)?'ON':relayIsOff(value)?'OFF':'—'}</strong><small>{Number.isFinite(state.cells[index])?`${state.cells[index].toFixed(2)} V · ${state.cells[index]===0?'safety cutoff':`value ${value}`}`:'Voltage unavailable'}</small></div>)}</div>}
   </Panel>;
 }
 
@@ -93,7 +99,8 @@ function ProtectionPanel({ state, onOpen, extended = false, reviewed = [], onRev
 }
 
 function OLED({ state }) {
-  return <div className="oled" aria-label="Local OLED display preview"><span>SOC: {percent(state.soc).padEnd(4)} DIR: {state.direction}</span><span>REL: {state.relays.filter(relayIsOn).length}/14 ON</span><span>{state.weakCells.length ? `CELL ${String(state.weakCells[0]).padStart(2,'0')}: LOW` : Number.isFinite(state.soc) ? 'CELLS: NORMAL' : 'WAITING FOR DATA'}</span></div>;
+  const firstZero = state.zeroVoltageCells?.[0];
+  return <div className="oled" aria-label="Local OLED display preview"><span>SOC: {percent(state.soc).padEnd(4)} DIR: {state.direction}</span><span>REL: {state.relays.filter(relayIsOn).length}/14 ON</span><span>{firstZero ? `CELL ${String(firstZero).padStart(2,'0')}: 0V/OFF` : state.weakCells.length ? `CELL ${String(state.weakCells[0]).padStart(2,'0')}: LOW` : Number.isFinite(state.soc) ? 'BATTERY: OK' : 'WAITING FOR DATA'}</span></div>;
 }
 
 function VehiclePanel({ state, large = false }) {
@@ -230,14 +237,14 @@ function ReportPanel({ state, onExport, onOpen, expanded = false }) {
 }
 
 function Metrics({ state }) {
-  const known = Number.isFinite(state.soc), weak = state.weakCells.length;
+  const known = Number.isFinite(state.soc), weak = state.weakCells.length, zero = state.zeroVoltageCells?.length || 0;
   const movement = state.connection === 'connected' ? MOVEMENT[state.direction] || MOVEMENT.S : null;
   const moving = movement && state.direction !== 'S';
   return <div className="metrics-grid">
     <article className="metric"><Icon name="battery" className="metric-icon"/><div><h2>State of Charge</h2><strong>{percent(state.soc)}</strong><div className="progress"><span style={{width:`${state.soc || 0}%`}}/></div></div></article>
     <article className="metric"><Icon name="discharge" className="metric-icon blue"/><div><h2>State of Discharge</h2><strong>{percent(known ? 100-state.soc : null)}</strong><div className="progress blue-track"><span style={{width:`${known ? 100-state.soc : 0}%`}}/></div></div></article>
     <article className="metric balance-metric"><Icon name="balance" className="metric-icon"/><div><h2>Relay Protection</h2><strong>{!known ? '—' : state.automatic ? 'AUTO' : 'PAUSED'}</strong><p>{!known ? 'Waiting for data' : `${state.relays.filter(relayIsOn).length}/14 relays on`}</p></div></article>
-    <article className={`metric health-metric ${weak ? 'warning-metric' : ''}`}><Icon name="heart" className="metric-icon"/><div><h2>Battery Health</h2><strong>{!known ? 'Unknown' : weak ? 'Attention' : 'Normal'}</strong><p>{!known ? 'Waiting for data' : weak ? `${weak} weak cell${weak>1?'s':''} detected` : 'All cell readings normal'}</p></div></article>
+    <article className={`metric health-metric ${zero ? 'fault-metric' : weak || state.batteryStatus==='Attention' ? 'warning-metric' : ''}`}><Icon name="heart" className="metric-icon"/><div><h2>Battery Status</h2><strong>{state.batteryStatus || (!known ? 'Unknown' : weak ? 'Attention' : 'OK')}</strong><p>{!known ? 'Waiting for data' : zero ? `${zero} zero-voltage batter${zero>1?'ies':'y'}; relay OFF` : weak ? `${weak} low-voltage batter${weak>1?'ies':'y'} detected` : state.batteryOk === true ? 'Calculated from all 14 voltages' : 'Check voltage readings'}</p></div></article>
     <article className={`metric movement-metric ${moving?'moving':'stopped'}`} aria-live="polite"><Icon name="car" className="metric-icon"/><div><h2>Vehicle Movement</h2><strong><span>{movement?.symbol || '•'}</span>{movement?.label || 'Unknown'}</strong><p>{movement ? `Firebase direction: ${state.direction}` : 'Waiting for vehicle status'}</p></div></article>
   </div>;
 }
@@ -276,8 +283,8 @@ function CellModal({ number, state, onClose }) {
     document.addEventListener('keydown',onKey);
     return()=>{document.body.style.overflow=overflow;document.removeEventListener('keydown',onKey);previous?.focus();};
   },[onClose]);
-  const voltage=state.cells[number-1], weak=state.weakCells.includes(number);
-  return <div className="modal-backdrop" onClick={e=>{if(e.target===e.currentTarget)onClose();}}><section className="cell-dialog" ref={dialog} role="dialog" aria-modal="true" aria-labelledby="cell-title"><div className="dialog-top"><h2 id="cell-title">{cellLabel(number)} Details</h2><button ref={closeButton} className="icon-button" onClick={onClose} aria-label="Close cell details"><Icon name="close"/></button></div><div className="cell-summary"><strong>{Number.isFinite(voltage)?voltage.toFixed(3):'—'} <small>V</small></strong><Badge type={weak?'warning':'normal'}>{weak?'Weak cell':Number.isFinite(voltage)?'Normal':'Unknown'}</Badge></div><VoltagePanel state={state} onlyCell={number} expanded/>{weak?<div className="dialog-warning"><Icon name="alert"/><p>Abnormal voltage behavior detected. Inspect this cell and replace it if required.</p></div>:<p className="muted-text">Voltage status is supplied by the battery monitoring system.</p>}</section></div>;
+  const voltage=state.cells[number-1], weak=state.weakCells.includes(number), zero=state.zeroVoltageCells?.includes(number);
+  return <div className="modal-backdrop" onClick={e=>{if(e.target===e.currentTarget)onClose();}}><section className="cell-dialog" ref={dialog} role="dialog" aria-modal="true" aria-labelledby="cell-title"><div className="dialog-top"><h2 id="cell-title">{cellLabel(number)} Details</h2><button ref={closeButton} className="icon-button" onClick={onClose} aria-label="Close cell details"><Icon name="close"/></button></div><div className="cell-summary"><strong>{Number.isFinite(voltage)?voltage.toFixed(3):'—'} <small>V</small></strong><Badge type={weak?'warning':'normal'}>{zero?'No voltage':weak?'Weak battery':Number.isFinite(voltage)?'OK':'Unknown'}</Badge></div><VoltagePanel state={state} onlyCell={number} expanded/>{weak?<div className="dialog-warning"><Icon name="alert"/><p>{zero?`0 V detected. Relay ${number} is forced OFF even when automatic low-voltage control is paused.`:'Low voltage detected. Inspect this battery and replace it if required.'}</p></div>:<p className="muted-text">Battery status is calculated from its voltage reading.</p>}</section></div>;
 }
 
 export default function App() {
@@ -316,7 +323,7 @@ export default function App() {
 
     {tab==='protection'&&<div className="page-stack"><ProtectionPanel state={state} extended reviewed={reviewed} onReview={review}/><Panel title="Weak Cell Detection" icon="cells"><CellGrid state={state} onSelect={setCell}/><CellWarning state={state} onSelect={setCell}/><p className="muted-text panel-note">Weak-cell flags are based on abnormal voltage behavior reported by the battery monitoring system.</p></Panel></div>}
 
-    {tab==='vehicle'&&<div className="page-stack"><VehicleControl state={state} busy={busy} setDirection={setDirection} saveRoute={saveRoute} deleteRoute={deleteRoute} notify={notify}/><div className="two-column"><VehiclePanel state={state} large/><Panel title="Vehicle Battery Monitoring" icon="battery"><div className="vehicle-reading"><BatteryGauge soc={state.soc} charging={state.chargingStatus==='Charging'}/><dl><div><dt>State of charge</dt><dd>{percent(state.soc)}</dd></div><div><dt>State of discharge</dt><dd>{percent(known?100-state.soc:null)}</dd></div><div><dt>Current</dt><dd>{Number.isFinite(state.current)?`${state.current.toFixed(3)} A`:'—'}</dd></div><div><dt>Charging state</dt><dd>{state.socStatus}</dd></div><div><dt>Discharging state</dt><dd>{state.sodStatus}</dd></div><div><dt>Direction</dt><dd>{state.direction} · {directionName(state.direction)}</dd></div><div><dt>Battery health</dt><dd>{known?state.weakCells.length?'Needs attention':'Normal':'Unknown'}</dd></div></dl></div></Panel></div><VoltagePanel state={state} expanded/><ProtectionPanel state={state} onOpen={()=>navigate('protection')}/></div>}
+    {tab==='vehicle'&&<div className="page-stack"><VehicleControl state={state} busy={busy} setDirection={setDirection} saveRoute={saveRoute} deleteRoute={deleteRoute} notify={notify}/><div className="two-column"><VehiclePanel state={state} large/><Panel title="Vehicle Battery Monitoring" icon="battery"><div className="vehicle-reading"><BatteryGauge soc={state.soc} charging={state.chargingStatus==='Charging'}/><dl><div><dt>State of charge</dt><dd>{percent(state.soc)}</dd></div><div><dt>State of discharge</dt><dd>{percent(known?100-state.soc:null)}</dd></div><div><dt>Current</dt><dd>{Number.isFinite(state.current)?`${state.current.toFixed(3)} A`:'—'}</dd></div><div><dt>Charging state</dt><dd>{state.socStatus}</dd></div><div><dt>Discharging state</dt><dd>{state.sodStatus}</dd></div><div><dt>Direction</dt><dd>{state.direction} · {directionName(state.direction)}</dd></div><div><dt>Battery status</dt><dd>{state.batteryStatus || 'Unknown'}</dd></div></dl></div></Panel></div><VoltagePanel state={state} expanded/><ProtectionPanel state={state} onOpen={()=>navigate('protection')}/></div>}
 
     {tab==='reports'&&<div className="page-stack"><div className="report-toolbar"><div><h2>Battery performance & health</h2><p>Review voltage behavior and charge/discharge history.</p></div><label>Voltage history <select value={range} onChange={e=>setRange(e.target.value)}><option value="60">Last 60 minutes</option><option value="15">Last 15 minutes</option><option value="session">Available history</option></select></label></div><ReportPanel state={state} onExport={exportPdf} expanded/><VoltagePanel state={state} history={selectedHistory} expanded/><CyclePanel state={state} expanded/></div>}
 

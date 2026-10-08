@@ -77,13 +77,16 @@ export function makeReportPdf(state, history = state.history) {
   header(pdf, state, 'Battery overview, cell voltages and protection', 1);
   pdf.text(38, 165, `SOC: ${percentage(state.soc)}     SOD: ${percentage(Number.isFinite(state.soc) ? 100-state.soc : null)}     Charging status: ${state.chargingStatus}`, 11, true);
   pdf.text(38, 190, `Automatic balancing: ${state.automatic ? 'ON' : 'OFF'} | Balancing: ${state.balancing ? 'Active' : 'Stopped'}`, 10);
-  pdf.text(38, 215, `Battery health: ${state.weakCells.length ? 'Needs attention' : Number.isFinite(state.soc) ? 'Normal' : 'Unknown'} | Weak cells: ${state.weakCells.length}`, 10);
+  pdf.text(38, 215, `Battery status: ${state.batteryStatus || 'Unknown'} | Low/zero-voltage batteries: ${state.weakCells.length}`, 10);
   pdf.rect(38, 238, 519, 26, [0.92, 0.96, 0.98]);
   pdf.text(48, 255, 'Cell', 10, true); pdf.text(218, 255, 'Voltage', 10, true); pdf.text(398, 255, 'Status', 10, true);
   state.cells.forEach((v, i) => {
     const y = 285 + i*22;
     pdf.text(48, y, cellLabel(i+1), 10); pdf.text(218, y, voltage(v), 10);
-    pdf.text(398, y, state.weakCells.includes(i+1) ? 'Weak - inspect' : Number.isFinite(v) ? 'Normal' : 'Unknown', 10);
+    const status = state.zeroVoltageCells?.includes(i+1) ? '0 V - relay forced OFF'
+      : state.weakCells.includes(i+1) ? 'Low - inspect'
+        : Number.isFinite(v) ? 'OK' : 'Unknown';
+    pdf.text(398, y, status, 10);
     pdf.line(38, y+8, 557, y+8);
   });
   pdf.text(38, 623, 'Battery protection', 14, true);

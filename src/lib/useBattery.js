@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { addEvent, createInitialState } from './model.js';
 import {
   applyFirebaseEvent, firebaseSnapshotToTelemetry, FIREBASE_ROOT,
-  relayIsOn, relayTargets, subscribeDatabase, writeDatabase
+  LOW_VOLTAGE, RECOVERY_VOLTAGE, relayIsOn, relayTargets, subscribeDatabase, writeDatabase
 } from './firebaseRtdb.js';
 
 const unavailableState = () => ({
@@ -10,6 +10,7 @@ const unavailableState = () => ({
   cells: Array(14).fill(null), relays: Array(14).fill(null), soc: null,
   weakCells: [], history: [], cycles: [], events: [], direction: 'S',
   current: null, chargingVoltage: null, socStatus: 'UNKNOWN', sodStatus: 'UNKNOWN',
+  batteryOk: null, batteryStatus: 'Unknown', zeroVoltageCells: [], lowVoltageCells: [], overVoltageCells: [],
   led: false, routes: [], automatic: true, balancing: false,
   chargingStatus: 'Unknown', vehicle: { connected: false, status: 'Unknown' }
 });
@@ -20,20 +21,27 @@ export default function useBattery(notify) {
   const raw = useRef({});
   const automation = useRef(true);
   const relayWrite = useRef(false);
+  const pendingRelayTelemetry = useRef(null);
 
   const syncRelays = useCallback(async telemetry => {
-    if (!automation.current || relayWrite.current) return;
-    const targets = relayTargets(telemetry.cells, telemetry.relays);
-    const changes = {};
-    targets.forEach((target, index) => {
-      if (target !== null && telemetry.relays[index] !== target) changes[`Relay${index + 1}`] = target;
-    });
-    if (!Object.keys(changes).length) return;
+    pendingRelayTelemetry.current = telemetry;
+    if (relayWrite.current) return;
     relayWrite.current = true;
     try {
-      await writeDatabase(`${FIREBASE_ROOT}/Relay`, changes, 'PATCH');
-      const labels = Object.entries(changes).map(([name, value]) => `${name} ${relayIsOn(value) ? 'ON (0)' : 'OFF (1)'}`).join(', ');
-      setState(current => addEvent(current, `Automatic voltage protection: ${labels}`));
+      while (pendingRelayTelemetry.current) {
+        const latest = pendingRelayTelemetry.current;
+        pendingRelayTelemetry.current = null;
+        const targets = relayTargets(latest.cells, latest.relays, LOW_VOLTAGE, RECOVERY_VOLTAGE, automation.current);
+        const changes = {};
+        targets.forEach((target, index) => {
+          if (target !== null && latest.relays[index] !== target) changes[`Relay${index + 1}`] = target;
+        });
+        if (!Object.keys(changes).length) continue;
+        await writeDatabase(`${FIREBASE_ROOT}/Relay`, changes, 'PATCH');
+        const labels = Object.entries(changes).map(([name, value]) => `${name} ${relayIsOn(value) ? 'ON (0)' : 'OFF (1)'}`).join(', ');
+        const hardCutoff = Object.keys(changes).some(name => latest.cells[Number(name.replace('Relay', '')) - 1] === 0);
+        setState(current => addEvent(current, `${hardCutoff ? 'Zero-voltage safety cutoff' : 'Automatic voltage protection'}: ${labels}`, hardCutoff ? 'danger' : 'info'));
+      }
     } catch (error) {
       notify(`Relay update failed. Check Firebase Rules. ${error.message}`, 'error');
     } finally {
@@ -82,7 +90,7 @@ export default function useBattery(notify) {
     automation.current = Boolean(enabled);
     setState(current => ({ ...current, automatic: automation.current }));
     notify(`Automatic relay protection ${automation.current ? 'enabled' : 'paused'}.`, automation.current ? 'success' : 'error');
-    if (automation.current) syncRelays(firebaseSnapshotToTelemetry(raw.current, { automatic: true }));
+    syncRelays(firebaseSnapshotToTelemetry(raw.current, { automatic: automation.current }));
   }, [notify, syncRelays]);
 
   const saveRoute = useCallback(async route => {
