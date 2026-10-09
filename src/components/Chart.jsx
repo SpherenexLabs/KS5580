@@ -24,15 +24,6 @@ export default function Chart({ series = [], height = 154, min = 3.2, max = 4.4,
   </svg>;
 }
 
-export function temperatureSeries(history) {
-  if (!history.some(point => Number.isFinite(point.temperature))) return [];
-  const start = history[0].time;
-  return [{
-    id: 'temperature', label: 'Battery temperature', color: '#ef6c3e', width: 2.4,
-    points: history.filter(point => Number.isFinite(point.temperature)).map(point => ({ x: (point.time - start) / 60000, y: point.temperature }))
-  }];
-}
-
 export function historySeries(history, weakCells, onlyCell) {
   if (!history.length) return [];
   const start = history[0].time;

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createInitialState, applyDemoCommand, tickDemo, applyTelemetry, validateTelemetry, cellSpread, getAlerts } from '../src/lib/model.js';
 import { makeReportPdf } from '../src/lib/exportPdf.js';
-import { applyFirebaseEvent, batteryHealthFromVoltages, batterySocFromVoltages, firebaseSnapshotToTelemetry, HIGH_TEMPERATURE, LOW_TEMPERATURE, MAX_SAFE_VOLTAGE, normalizeSteps, relayTargets, voltageToSoc } from '../src/lib/firebaseRtdb.js';
+import { analyzeVoltages, applyFirebaseEvent, batteryHealthFromVoltages, batterySocFromVoltages, firebaseSnapshotToTelemetry, historyRecord, MAX_SAFE_VOLTAGE, normalizeHistory, normalizeSteps, predictVoltageConditions, relayTargets, voltageToSoc } from '../src/lib/firebaseRtdb.js';
 
 const now = 1791263400000;
 const telemetry = () => ({
@@ -74,11 +74,12 @@ test('stale telemetry adds an alert without removing an active battery fault', (
   assert.ok(alerts.some(a=>a.id==='connection')); assert.ok(alerts.some(a=>a.id==='overvoltage'));
 });
 
-test('PDF is an actual three-page document with exact byte offsets and demo disclosure', () => {
+test('PDF is an actual four-page document with health predictions, suggestions and exact byte offsets', () => {
   const bytes=makeReportPdf(createInitialState(now));
   const text=new TextDecoder().decode(bytes);
   assert.ok(text.startsWith('%PDF-1.4')); assert.ok(text.endsWith('%%EOF'));
-  assert.match(text,/\/Count 3/); assert.match(text,/DEMO DATA/); assert.match(text,/Cell 14/);
+  assert.match(text,/\/Count 4/); assert.match(text,/DEMO DATA/); assert.match(text,/Cell 14/);
+  assert.match(text,/All battery predictions and suggested actions/); assert.match(text,/Highest battery/);
   assert.doesNotMatch(text,/KS\d{4}|ks\d{4}|NaN|Infinity/);
   const xref=Number(text.match(/startxref\n(\d+)/)[1]);
   assert.equal(text.slice(xref,xref+4),'xref');
@@ -97,27 +98,43 @@ test('PDF handles unavailable telemetry without presenting NaN values', () => {
   assert.doesNotMatch(text,/NaN|Infinity/);
 });
 
-test('Firebase voltage, relay, temperature, current and charge-state keys map correctly', () => {
+test('Firebase voltage, relay, current and charge-state keys map correctly without temperature', () => {
   const Voltage={}, Relay={};
   for(let i=1;i<=14;i++){Voltage[`V${i}`]=i===10?2.9:3.8;Relay[`Relay${i}`]=1;}
   const state=firebaseSnapshotToTelemetry({Voltage,Relay,Temp:26.7,Current:0.74369,ChargingVoltage:12.4,SOC_Status:'NOT CHARGING',SOD_Status:'IDLE',Vehicle:{Direction:'L'}},{automatic:true});
   assert.equal(state.cells[9],2.9); assert.equal(state.relays[13],1);
   assert.deepEqual(state.weakCells,[10]); assert.equal(state.direction,'L');
   assert.equal(state.current,0.74369); assert.equal(state.chargingVoltage,12.4);
-  assert.equal(state.temperature,26.7);
+  assert.equal('temperature' in state,false);
   assert.equal(state.socStatus,'NOT CHARGING'); assert.equal(state.sodStatus,'IDLE');
   assert.equal(state.chargingStatus,'Idle');
 });
 
-test('requested voltage and temperature alert boundaries are strict', () => {
+test('requested voltage alert boundary is strict', () => {
   const atVoltage=batteryHealthFromVoltages(Array(14).fill(MAX_SAFE_VOLTAGE));
   assert.deepEqual(atVoltage.overVoltageCells,[]);
   const above=Array(14).fill(MAX_SAFE_VOLTAGE); above[2]=MAX_SAFE_VOLTAGE+0.01;
   assert.deepEqual(batteryHealthFromVoltages(above).overVoltageCells,[3]);
-  assert.equal(getAlerts({...createInitialState(now),temperature:LOW_TEMPERATURE}).some(alert=>alert.id==='temperature-low'),false);
-  assert.equal(getAlerts({...createInitialState(now),temperature:LOW_TEMPERATURE-0.1}).some(alert=>alert.id==='temperature-low'),true);
-  assert.equal(getAlerts({...createInitialState(now),temperature:HIGH_TEMPERATURE}).some(alert=>alert.id==='temperature-high'),false);
-  assert.equal(getAlerts({...createInitialState(now),temperature:HIGH_TEMPERATURE+0.1}).some(alert=>alert.id==='temperature-high'),true);
+});
+
+test('historical Firebase records retain voltages and health metadata', () => {
+  const cells=Array(14).fill(3.5); cells[2]=2.8; cells[8]=3.9;
+  const telemetry={...firebaseSnapshotToTelemetry({Voltage:Object.fromEntries(cells.map((value,index)=>[`V${index+1}`,value])),Relay:{}}),cells};
+  const stored=historyRecord(telemetry,now);
+  assert.deepEqual(stored.lowVoltageCells,[3]); assert.deepEqual(stored.highVoltageCells,[9]);
+  assert.deepEqual(stored.highestCells,[9]);
+  const [restored]=normalizeHistory({[Math.floor(now/60000)]:stored});
+  assert.equal(restored.time,now); assert.deepEqual(restored.cells,cells);
+});
+
+test('all batteries receive a condition, highest marker and trend-based suggestion', () => {
+  const earlier=Array(14).fill(3.0), latest=Array(14).fill(3.0);
+  latest[0]=2.99; latest[1]=3.9; latest[2]=0;
+  const analysis=analyzeVoltages(latest);
+  assert.deepEqual(analysis.highestCells,[2]);
+  assert.equal(analysis.cells[0].condition,'Low'); assert.equal(analysis.cells[1].condition,'High'); assert.equal(analysis.cells[2].condition,'No voltage');
+  const predictions=predictVoltageConditions([{time:now-60000,cells:earlier},{time:now,cells:latest}]);
+  assert.equal(predictions.length,14); assert.equal(predictions[0].trend,'Falling'); assert.match(predictions[0].suggestion,/reduce load/i);
 });
 
 test('relay automation cuts low cells, restores recovered cells, and holds in hysteresis band', () => {

@@ -3,9 +3,7 @@ import * as THREE from 'three';
 
 const THEMES = {
   'over-voltage': { color: 0xff334f, accent: '#ff334f', symbol: '!', label: 'OVER VOLTAGE' },
-  'low-voltage': { color: 0xffa21a, accent: '#f08a00', symbol: '↓', label: 'LOW VOLTAGE' },
-  'high-temperature': { color: 0xff4d2e, accent: '#f04424', symbol: '↑', label: 'HIGH TEMPERATURE' },
-  'low-temperature': { color: 0x32a8ff, accent: '#168bdd', symbol: '↓', label: 'LOW TEMPERATURE' }
+  'low-voltage': { color: 0xffa21a, accent: '#f08a00', symbol: '↓', label: 'LOW VOLTAGE' }
 };
 
 function AlertScene({ type }) {

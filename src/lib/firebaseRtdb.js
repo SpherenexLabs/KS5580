@@ -13,8 +13,6 @@ export const FIREBASE_ROOT = 'BMS_5580';
 export const LOW_VOLTAGE = 3;
 export const RECOVERY_VOLTAGE = 3.1;
 export const MAX_SAFE_VOLTAGE = 3.8;
-export const LOW_TEMPERATURE = 20;
-export const HIGH_TEMPERATURE = 30;
 export const ZERO_VOLTAGE = 0;
 export const EMPTY_VOLTAGE = 0;
 export const FULL_VOLTAGE = 4.2;
@@ -75,12 +73,6 @@ function asNumber(value) {
   return Number.isFinite(number) && number >= 0 && number <= 6 ? number : null;
 }
 
-function asTemperature(value) {
-  if (value === null || value === undefined || value === '') return null;
-  const number = typeof value === 'number' ? value : Number(value);
-  return Number.isFinite(number) && number >= -100 && number <= 200 ? number : null;
-}
-
 export function numberedValues(node, prefix, count = 14) {
   return Array.from({ length: count }, (_, index) => asNumber(node?.[`${prefix}${index + 1}`]));
 }
@@ -127,6 +119,105 @@ export function batteryHealthFromVoltages(cells, count = 14) {
     zeroVoltageCells,
     lowVoltageCells,
     overVoltageCells
+  };
+}
+
+export function voltageCondition(voltage) {
+  if (!Number.isFinite(voltage)) return 'Unknown';
+  if (voltage === ZERO_VOLTAGE) return 'No voltage';
+  if (voltage < LOW_VOLTAGE) return 'Low';
+  if (voltage > MAX_SAFE_VOLTAGE) return 'High';
+  return 'Normal';
+}
+
+export function voltageSuggestion(condition, number) {
+  const battery = `Battery ${String(number).padStart(2, '0')}`;
+  if (condition === 'No voltage') return `${battery}: keep its relay OFF, verify wiring and fuse with a meter, and replace the battery if 0 V is confirmed.`;
+  if (condition === 'Low') return `${battery}: reduce load, keep it isolated, recharge with the correct charger, then inspect or replace it if it stays below ${RECOVERY_VOLTAGE.toFixed(1)} V.`;
+  if (condition === 'High') return `${battery}: stop charging, isolate the charger, verify BMS/charger settings, and balance or service the battery before reuse.`;
+  if (condition === 'Normal') return `${battery}: voltage is within the configured range; continue monitoring and balancing.`;
+  return `${battery}: reading is unavailable; check its sensor connection before making a maintenance decision.`;
+}
+
+export function analyzeVoltages(cells) {
+  const readings = Array.isArray(cells) ? cells.slice(0, 14) : [];
+  const finite = readings.map((voltage, index) => ({ voltage, number: index + 1 })).filter(item => Number.isFinite(item.voltage));
+  const highestVoltage = finite.length ? Math.max(...finite.map(item => item.voltage)) : null;
+  const highestCells = finite.filter(item => item.voltage === highestVoltage).map(item => item.number);
+  const lowestVoltage = finite.length ? Math.min(...finite.map(item => item.voltage)) : null;
+  return {
+    highestVoltage,
+    highestCells,
+    lowestVoltage,
+    cells: Array.from({ length: 14 }, (_, index) => {
+      const voltage = readings[index];
+      const condition = voltageCondition(voltage);
+      return {
+        number: index + 1,
+        voltage,
+        condition,
+        isHighest: Number.isFinite(voltage) && voltage === highestVoltage,
+        suggestion: voltageSuggestion(condition, index + 1)
+      };
+    })
+  };
+}
+
+export function predictVoltageConditions(history, minutes = 30) {
+  const records = (Array.isArray(history) ? history : [])
+    .filter(point => Number.isFinite(point?.time) && Array.isArray(point?.cells))
+    .sort((a, b) => a.time - b.time);
+  return Array.from({ length: 14 }, (_, index) => {
+    const samples = records.map(point => ({ time: point.time, voltage: point.cells[index] })).filter(point => Number.isFinite(point.voltage));
+    const latest = samples.at(-1);
+    let projectedVoltage = latest?.voltage ?? null;
+    let trend = 'Insufficient history';
+    if (samples.length >= 2) {
+      const comparison = [...samples].reverse().find(point => latest.time - point.time >= 30000) || samples[0];
+      const elapsedMinutes = (latest.time - comparison.time) / 60000;
+      if (elapsedMinutes > 0) {
+        const rate = (latest.voltage - comparison.voltage) / elapsedMinutes;
+        projectedVoltage = Math.max(0, Math.min(6, latest.voltage + rate * minutes));
+        trend = Math.abs(rate) < 0.0005 ? 'Stable' : rate > 0 ? 'Rising' : 'Falling';
+      }
+    }
+    const condition = voltageCondition(projectedVoltage);
+    return {
+      number: index + 1,
+      currentVoltage: latest?.voltage ?? null,
+      projectedVoltage,
+      minutes,
+      trend,
+      condition,
+      suggestion: voltageSuggestion(condition, index + 1)
+    };
+  });
+}
+
+export function normalizeHistory(node, limit = 5000) {
+  const entries = Array.isArray(node) ? node.map((value, index) => [String(index), value]) : Object.entries(node || {});
+  const records = entries.map(([id, record]) => {
+    const time = Number(record?.recordedAt ?? record?.time ?? id);
+    const sourceCells = Array.isArray(record?.cells) ? record.cells : numberedValues(record?.Voltage, 'V');
+    const cells = Array.from({ length: 14 }, (_, index) => asNumber(sourceCells[index]));
+    const soc = Number(record?.soc);
+    return { id, time, cells, soc: Number.isFinite(soc) ? soc : batterySocFromVoltages(cells) };
+  }).filter(record => Number.isFinite(record.time) && record.cells.some(Number.isFinite));
+  return records.sort((a, b) => a.time - b.time).slice(-limit);
+}
+
+export function historyRecord(telemetry, now = Date.now()) {
+  const analysis = analyzeVoltages(telemetry.cells);
+  return {
+    recordedAt: now,
+    cells: telemetry.cells.map(value => Number.isFinite(value) ? value : null),
+    soc: Number.isFinite(telemetry.soc) ? Number(telemetry.soc.toFixed(2)) : null,
+    batteryStatus: telemetry.batteryStatus || 'Unknown',
+    highestCells: analysis.highestCells,
+    highestVoltage: analysis.highestVoltage,
+    zeroVoltageCells: telemetry.zeroVoltageCells || [],
+    lowVoltageCells: telemetry.lowVoltageCells || [],
+    highVoltageCells: telemetry.overVoltageCells || []
   };
 }
 
@@ -190,7 +281,6 @@ export function firebaseSnapshotToTelemetry(data, previous = {}) {
   const current = Number.isFinite(currentValue) ? currentValue : null;
   const chargingVoltageValue = Number(data?.ChargingVoltage);
   const chargingVoltage = Number.isFinite(chargingVoltageValue) ? chargingVoltageValue : null;
-  const temperature = asTemperature(data?.Temp);
   const cleanStatus = value => typeof value === 'string' && value.trim() ? value.trim().slice(0, 60).toUpperCase() : 'UNKNOWN';
   const socStatus = cleanStatus(data?.SOC_Status);
   const sodStatus = cleanStatus(data?.SOD_Status);
@@ -202,7 +292,7 @@ export function firebaseSnapshotToTelemetry(data, previous = {}) {
     ? String(data.Vehicle.Direction).toUpperCase() : 'S';
   const status = { F: 'Moving forward', B: 'Moving backward', L: 'Turning left', R: 'Turning right', S: 'Stationary' }[direction];
   return {
-    cells, relays, soc, weakCells, ...health, current, chargingVoltage, temperature, socStatus, sodStatus, led: Number(data?.LED) === 1,
+    cells, relays, soc, weakCells, ...health, current, chargingVoltage, socStatus, sodStatus, led: Number(data?.LED) === 1,
     chargingStatus,
     protection: { overvoltage: health.overVoltageCells.length > 0, undervoltage: weakCells.length > 0, shortCircuit: false, cutoff: relays.some(relayIsOff) },
     direction,

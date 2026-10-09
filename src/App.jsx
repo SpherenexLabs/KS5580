@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Icon from './components/Icon.jsx';
-import Chart, { cycleSeries, historySeries, temperatureSeries } from './components/Chart.jsx';
+import Chart, { cycleSeries, historySeries } from './components/Chart.jsx';
 import Robot from './components/Robot.jsx';
 import Cells3D from './components/Cells3D.jsx';
 import SafetyAlert3D from './components/SafetyAlert3D.jsx';
 import useBattery from './lib/useBattery.js';
 import { cellLabel, cellSpread, getAlerts } from './lib/model.js';
 import { downloadReport } from './lib/exportPdf.js';
-import { HIGH_TEMPERATURE, LOW_TEMPERATURE, LOW_VOLTAGE, MAX_SAFE_VOLTAGE, RECOVERY_VOLTAGE, relayIsOff, relayIsOn, voltageToSoc } from './lib/firebaseRtdb.js';
+import { analyzeVoltages, batteryHealthFromVoltages, LOW_VOLTAGE, MAX_SAFE_VOLTAGE, predictVoltageConditions, RECOVERY_VOLTAGE, relayIsOff, relayIsOn, voltageSuggestion, voltageToSoc } from './lib/firebaseRtdb.js';
 
 const NAV = [
   ['overview','home','Overview'], ['cells','cells','Cell Monitoring'], ['balancing','balance','Relay Control'],
@@ -26,12 +26,15 @@ function Badge({ children, type = 'normal' }) { return <span className={`badge $
 function Legend({ color, children }) { return <span className="legend"><span style={{background:color}}/>{children}</span>; }
 
 function CellGrid({ state, onSelect, expanded = false }) {
+  const analysis = analyzeVoltages(state.cells);
   return <div className={`cell-grid ${expanded ? 'expanded-grid' : ''}`}>
     {state.cells.map((v,i) => {
       const zero = state.zeroVoltageCells?.includes(i+1), weak = state.weakCells.includes(i+1), over = state.overVoltageCells?.includes(i+1), known = Number.isFinite(v);
+      const highest = analysis.highestCells.includes(i + 1);
       const level = voltageToSoc(v) ?? 0;
-      const status = zero ? 'No voltage' : weak ? 'Low' : over ? 'Over voltage' : known ? 'OK' : 'Unknown';
-      return <button className={`cell-tile ${zero ? 'zero' : weak ? 'weak' : over ? 'over' : ''}`} key={i} onClick={()=>onSelect(i+1)} aria-label={`View ${cellLabel(i+1)}, ${known ? v.toFixed(2)+' volts' : 'unavailable'}, ${status}`}>
+      const condition = zero ? 'No voltage' : weak ? 'Low voltage' : over ? 'High voltage' : known ? 'Normal' : 'Unknown';
+      const status = highest && known ? `Highest · ${condition}` : condition;
+      return <button className={`cell-tile ${zero ? 'zero' : weak ? 'weak' : over ? 'over' : highest ? 'highest' : ''}`} key={i} onClick={()=>onSelect(i+1)} aria-label={`View ${cellLabel(i+1)}, ${known ? v.toFixed(2)+' volts' : 'unavailable'}, ${status}`}>
         <span className="cell-name">{cellLabel(i+1)}</span>
         <strong>{known ? v.toFixed(2) : '—'} <small>V</small></strong>
         <span className="mini-track"><span style={{width:`${level}%`}}/></span>
@@ -87,23 +90,6 @@ function CyclePanel({ state, expanded = false }) {
   return <Panel title="Charge / Discharge Cycles" icon="cycle" className="chart-panel" action={<div className="chart-legend"><Legend color="#00bda4">Charge</Legend><Legend color="#2476ed">Discharge</Legend></div>}>
     <Chart series={state.mode === 'demo' ? cycleSeries() : []} height={expanded ? 275 : 162} title="Illustrative charge and discharge voltage profiles"/>
     {state.mode==='live' && <p className="muted-text chart-footnote">Cycle history requires records from your battery data source.</p>}
-  </Panel>;
-}
-
-function TemperaturePanel({ state, history = state.history, expanded = false }) {
-  const readings = history.map(point => point.temperature).filter(Number.isFinite);
-  const low = readings.length ? Math.min(...readings, LOW_TEMPERATURE) : LOW_TEMPERATURE;
-  const high = readings.length ? Math.max(...readings, HIGH_TEMPERATURE) : HIGH_TEMPERATURE;
-  const min = Math.floor(low - 3), max = Math.ceil(high + 3);
-  const status = !Number.isFinite(state.temperature) ? 'Unknown' : state.temperature < LOW_TEMPERATURE ? 'Low' : state.temperature > HIGH_TEMPERATURE ? 'High' : 'Normal';
-  const base = temperatureSeries(history);
-  const bounds = history.length ? [
-    { id: 'temp-low-limit', label: 'Low limit', color: '#2687d8', opacity: .55, width: 1.2, points: history.map(point => ({ x: (point.time-history[0].time)/60000, y: LOW_TEMPERATURE })) },
-    { id: 'temp-high-limit', label: 'High limit', color: '#dc354f', opacity: .55, width: 1.2, points: history.map(point => ({ x: (point.time-history[0].time)/60000, y: HIGH_TEMPERATURE })) }
-  ] : [];
-  return <Panel title="Battery Temperature" icon="chart" className="chart-panel temperature-panel" action={<div className="temperature-heading"><strong>{Number.isFinite(state.temperature)?`${state.temperature.toFixed(1)} °C`:'—'}</strong><Badge type={status==='Normal'?'normal':status==='Unknown'?'demo':'warning'}>{status}</Badge></div>}>
-    <Chart series={[...base,...bounds]} height={expanded ? 275 : 190} min={min} max={max} yLabel="Temperature (°C)" title="Firebase battery temperature over time"/>
-    <div className="temperature-limits"><span><i className="temp-low-dot"/>Low below {LOW_TEMPERATURE} °C</span><span><i className="temp-normal-dot"/>Normal {LOW_TEMPERATURE}–{HIGH_TEMPERATURE} °C</span><span><i className="temp-high-dot"/>High above {HIGH_TEMPERATURE} °C</span></div>
   </Panel>;
 }
 
@@ -247,10 +233,33 @@ function Trend({ cycles }) {
   return <div className="degradation"><label>Degradation trend</label><svg viewBox="0 0 130 64" aria-label="Number of weak cells per recorded cycle" role="img"><path d="M10 6V45H123" stroke="#d9e3ef" fill="none"/>{counts.length>0 ? <><polygon points={`10,45 ${points} 120,45`} fill="#fff1cc"/><polyline points={points} stroke="#eea000" strokeWidth="2" fill="none"/>{counts.map((c,i)=><circle key={i} cx={10+i*110/Math.max(1,counts.length-1)} cy={42-c/max*30} r="2.8" fill="white" stroke="#eea000"/>)}</> : <text x="66" y="28" textAnchor="middle" fontSize="9" fill="#6a819a">No records</text>}<text x="66" y="60" textAnchor="middle" fontSize="8" fill="#6a819a">Weak cells / cycle</text></svg></div>;
 }
 
+function HistoricalDataPanel({ history }) {
+  const records = [...history].reverse().slice(0, 30);
+  return <Panel title="Firebase Historical Health Data" icon="clock" className="history-panel" action={<Badge>{history.length} records</Badge>}>
+    <div className="table-scroll"><table className="history-table"><thead><tr><th>Date & time</th><th>Pack health</th><th>Lowest</th><th>Highest battery</th><th>Condition details</th></tr></thead><tbody>{records.map((record,index)=>{
+      const analysis=analyzeVoltages(record.cells), health=batteryHealthFromVoltages(record.cells);
+      const problems=[
+        health.zeroVoltageCells.length&&`No voltage: ${health.zeroVoltageCells.map(cellLabel).join(', ')}`,
+        health.lowVoltageCells.length&&`Low: ${health.lowVoltageCells.map(cellLabel).join(', ')}`,
+        health.overVoltageCells.length&&`High: ${health.overVoltageCells.map(cellLabel).join(', ')}`
+      ].filter(Boolean).join(' · ')||'All batteries within configured voltage range';
+      return <tr key={record.id||`${record.time}-${index}`}><td>{new Date(record.time).toLocaleString()}</td><td><Badge type={health.batteryStatus==='OK'?'normal':health.batteryStatus==='Unknown'?'demo':'warning'}>{health.batteryStatus}</Badge></td><td>{Number.isFinite(analysis.lowestVoltage)?`${analysis.lowestVoltage.toFixed(3)} V`:'—'}</td><td>{analysis.highestCells.length?`${analysis.highestCells.map(cellLabel).join(', ')} (${analysis.highestVoltage.toFixed(3)} V)`:'—'}</td><td>{problems}</td></tr>;
+    })}</tbody></table>{!records.length&&<p className="empty-table">No Firebase history is available yet. A voltage snapshot is saved once per minute.</p>}</div>
+  </Panel>;
+}
+
+function PredictionPanel({ state, history = state.history }) {
+  const predictions = predictVoltageConditions(history);
+  return <Panel title="AI Voltage Suggestions & 30-Minute Prediction" icon="heart" className="prediction-panel">
+    <p className="prediction-note">Predictions use the recorded voltage trend. Safety decisions must use the current measured voltage and qualified inspection.</p>
+    <div className="table-scroll"><table className="prediction-table"><thead><tr><th>Battery</th><th>Current</th><th>Trend</th><th>Predicted</th><th>Predicted condition</th><th>Suggested action</th></tr></thead><tbody>{predictions.map(item=><tr key={item.number} className={item.condition==='Normal'?'':'attention-row'}><td>{cellLabel(item.number)}</td><td>{Number.isFinite(item.currentVoltage)?`${item.currentVoltage.toFixed(3)} V`:'—'}</td><td>{item.trend}</td><td>{Number.isFinite(item.projectedVoltage)?`${item.projectedVoltage.toFixed(3)} V`:'—'}</td><td><Badge type={item.condition==='Normal'?'normal':item.condition==='Unknown'?'demo':'warning'}>{item.condition}</Badge></td><td>{item.suggestion}</td></tr>)}</tbody></table></div>
+  </Panel>;
+}
+
 function ReportPanel({ state, onExport, onOpen, expanded = false }) {
   return <Panel title="Performance Reports" icon="report" className={`reports-panel ${expanded ? 'reports-large' : ''}`}>
     <div className="report-content"><div className="table-scroll"><table className="cycle-table"><thead><tr><th>Cycle</th>{expanded&&<><th>Date</th><th>Voltage range</th><th>Charge</th><th>Discharge</th></>}<th>Health</th></tr></thead><tbody>{state.cycles.map(c=><tr key={c.id}><td>{c.id}</td>{expanded&&<><td>{new Date(c.date).toLocaleDateString()}</td><td>{c.min.toFixed(2)}–{c.max.toFixed(2)} V</td><td>{c.charge} min</td><td>{c.discharge} min</td></>}<td><i className={`dot ${c.weakCells.length ? 'amber' : 'green'}`}/>{c.health}</td></tr>)}</tbody></table>{!state.cycles.length&&<p className="muted-text">No cycle records available.</p>}</div><Trend cycles={state.cycles}/></div>
-    <p className="report-caption">Voltage history • Cycle analysis • Battery health</p><button className="button primary full-width" onClick={onExport}><Icon name="report" size={17}/>Generate PDF Report</button>{expanded&&<p className="muted-text report-note">The report includes the current readings, selected voltage history, protection status, cycle records and maintenance alerts.</p>}
+    <p className="report-caption">Firebase history • Voltage prediction • Battery health • Suggested actions</p><button className="button primary full-width" onClick={onExport}><Icon name="report" size={17}/>Generate PDF Report</button>{expanded&&<p className="muted-text report-note">The PDF includes current conditions for all 14 batteries, historical Firebase records, voltage predictions, and maintenance suggestions.</p>}
   </Panel>;
 }
 
@@ -302,7 +311,8 @@ function CellModal({ number, state, onClose }) {
     return()=>{document.body.style.overflow=overflow;document.removeEventListener('keydown',onKey);previous?.focus();};
   },[onClose]);
   const voltage=state.cells[number-1], weak=state.weakCells.includes(number), zero=state.zeroVoltageCells?.includes(number), over=state.overVoltageCells?.includes(number);
-  return <div className="modal-backdrop" onClick={e=>{if(e.target===e.currentTarget)onClose();}}><section className="cell-dialog" ref={dialog} role="dialog" aria-modal="true" aria-labelledby="cell-title"><div className="dialog-top"><h2 id="cell-title">{cellLabel(number)} Details</h2><button ref={closeButton} className="icon-button" onClick={onClose} aria-label="Close cell details"><Icon name="close"/></button></div><div className="cell-summary"><strong>{Number.isFinite(voltage)?voltage.toFixed(3):'—'} <small>V</small></strong><Badge type={weak||over?'warning':'normal'}>{zero?'No voltage':weak?'Low voltage':over?'Over voltage':Number.isFinite(voltage)?'OK':'Unknown'}</Badge></div><VoltagePanel state={state} onlyCell={number} expanded/>{weak||over?<div className="dialog-warning"><Icon name="alert"/><p>{zero?`0 V detected. Relay ${number} is forced OFF even when automatic low-voltage control is paused.`:over?`Voltage is above ${MAX_SAFE_VOLTAGE.toFixed(1)} V. Disconnect charging and inspect this battery.`:`Voltage is below ${LOW_VOLTAGE.toFixed(1)} V. Inspect this battery and replace it if required.`}</p></div>:<p className="muted-text">Battery status is calculated from its voltage reading.</p>}</section></div>;
+  const condition=zero?'No voltage':weak?'Low':over?'High':Number.isFinite(voltage)?'Normal':'Unknown';
+  return <div className="modal-backdrop" onClick={e=>{if(e.target===e.currentTarget)onClose();}}><section className="cell-dialog" ref={dialog} role="dialog" aria-modal="true" aria-labelledby="cell-title"><div className="dialog-top"><h2 id="cell-title">{cellLabel(number)} Details</h2><button ref={closeButton} className="icon-button" onClick={onClose} aria-label="Close cell details"><Icon name="close"/></button></div><div className="cell-summary"><strong>{Number.isFinite(voltage)?voltage.toFixed(3):'—'} <small>V</small></strong><Badge type={condition==='Normal'?'normal':condition==='Unknown'?'demo':'warning'}>{condition}</Badge></div><VoltagePanel state={state} onlyCell={number} expanded/><div className={`dialog-suggestion ${condition==='Normal'?'normal':''}`}><Icon name={condition==='Normal'?'check':'alert'}/><div><strong>AI suggestion</strong><p>{voltageSuggestion(condition,number)}</p></div></div></section></div>;
 }
 
 function safetyConditions(state) {
@@ -318,8 +328,6 @@ function safetyConditions(state) {
     const minimum = Math.min(...low.map(number => state.cells[number - 1]));
     conditions.push({ type: 'low-voltage', value: `${minimum.toFixed(2)} V`, detail: `${low.map(cellLabel).join(', ')} ${low.length === 1 ? 'is' : 'are'} below ${LOW_VOLTAGE.toFixed(1)} V. The matching relay protection will switch off.` });
   }
-  if (Number.isFinite(state.temperature) && state.temperature > HIGH_TEMPERATURE) conditions.push({ type: 'high-temperature', value: `${state.temperature.toFixed(1)} °C`, detail: `Battery temperature is above ${HIGH_TEMPERATURE} °C. Stop operation and allow the pack to cool.` });
-  if (Number.isFinite(state.temperature) && state.temperature < LOW_TEMPERATURE) conditions.push({ type: 'low-temperature', value: `${state.temperature.toFixed(1)} °C`, detail: `Battery temperature is below ${LOW_TEMPERATURE} °C. Warm the pack safely before charging or heavy use.` });
   return conditions;
 }
 
@@ -344,13 +352,13 @@ export default function App() {
       const additions=newlyActive.filter(alert=>!queued.has(alert.type));
       return [...retained,...additions];
     });
-  },[state.cells,state.temperature,state.connection]);
+  },[state.cells,state.connection]);
   const closeCell=useCallback(()=>setCell(null),[]);
   const selectedHistory=state.history.filter(p=>range==='session'||p.time>=state.updatedAt-Number(range)*60000);
   const exportPdf=()=>{try{downloadReport(state,tab==='reports'?selectedHistory:state.history);notify('PDF report downloaded.');}catch{notify('The PDF report could not be generated.','error');}};
   const navigate=key=>{setTab(key);setMobile(false);window.scrollTo({top:0,behavior:'smooth'});};
   const review=id=>{setReviewed(previous=>{const next=[...new Set([...previous,id])];try{localStorage.setItem('bms-reviewed-alerts',JSON.stringify(next));}catch{}return next;});notify('Alert marked reviewed. Its active warning remains visible.');};
-  const known=Number.isFinite(state.soc), goodCells=state.cells.filter(Number.isFinite);
+  const known=Number.isFinite(state.soc), goodCells=state.cells.filter(Number.isFinite), voltageAnalysis=analyzeVoltages(state.cells);
   const [clock,setClock]=useState(Date.now());
   useEffect(()=>{const timer=setInterval(()=>setClock(Date.now()),3000);return()=>clearInterval(timer);},[]);
 
@@ -364,19 +372,19 @@ export default function App() {
       <Panel title="Individual Cell Voltages" icon="cells" className="cells-panel"><CellGrid state={state} onSelect={setCell}/><CellWarning state={state} onSelect={setCell}/></Panel>
       <RelayControls state={state} setAutomation={setRelayAutomation} busy={busy}/>
       <Panel title="3D Cell Charge Levels" icon="battery" className="cells3d-panel" action={<Badge>Firebase values</Badge>}><Cells3D values={state.cells} onSelect={setCell}/></Panel>
-      <div className="charts-row"><VoltagePanel state={state}/><CyclePanel state={state}/><TemperaturePanel state={state}/></div>
+      <div className="charts-row"><VoltagePanel state={state}/><CyclePanel state={state}/></div>
       <div className="bottom-row"><ProtectionPanel state={state} onOpen={()=>navigate('protection')}/><VehiclePanel state={state}/><ReportPanel state={state} onExport={exportPdf}/></div>
     </div>}
 
-    {tab==='cells'&&<div className="page-stack"><Panel title="Individual Cell Voltages" icon="cells" action={<Badge>{state.cells.length} cells</Badge>}><CellGrid state={state} onSelect={setCell} expanded/><CellWarning state={state} onSelect={setCell}/></Panel><Panel title="3D Cell Charge Levels" icon="battery" action={<Badge>Firebase values</Badge>}><Cells3D values={state.cells} onSelect={setCell}/></Panel><div className="stat-strip"><div><label>Highest cell voltage</label><strong>{goodCells.length?Math.max(...goodCells).toFixed(3):'—'} V</strong></div><div><label>Lowest cell voltage</label><strong>{goodCells.length?Math.min(...goodCells).toFixed(3):'—'} V</strong></div><div><label>Cell voltage difference</label><strong>{goodCells.length?cellSpread(goodCells).toFixed(3):'—'} V</strong></div><div><label>Cells requiring inspection</label><strong>{known?state.weakCells.length:'—'}</strong></div></div><VoltagePanel state={state} expanded/></div>}
+    {tab==='cells'&&<div className="page-stack"><Panel title="Individual Cell Voltages" icon="cells" action={<Badge>{state.cells.length} cells</Badge>}><CellGrid state={state} onSelect={setCell} expanded/><CellWarning state={state} onSelect={setCell}/></Panel><Panel title="3D Cell Charge Levels" icon="battery" action={<Badge>Firebase values</Badge>}><Cells3D values={state.cells} onSelect={setCell}/></Panel><div className="stat-strip"><div><label>Highest battery</label><strong>{voltageAnalysis.highestCells.length?voltageAnalysis.highestCells.map(cellLabel).join(', '):'—'}</strong><small>{Number.isFinite(voltageAnalysis.highestVoltage)?`${voltageAnalysis.highestVoltage.toFixed(3)} V`:'Voltage unavailable'}</small></div><div><label>Lowest cell voltage</label><strong>{goodCells.length?Math.min(...goodCells).toFixed(3):'—'} V</strong></div><div><label>Cell voltage difference</label><strong>{goodCells.length?cellSpread(goodCells).toFixed(3):'—'} V</strong></div><div><label>Cells requiring inspection</label><strong>{known?[...(state.weakCells||[]),...(state.overVoltageCells||[])].filter((value,index,list)=>list.indexOf(value)===index).length:'—'}</strong></div></div><PredictionPanel state={state}/><VoltagePanel state={state} expanded/></div>}
 
     {tab==='balancing'&&<div className="page-stack"><div className="two-column"><RelayControls state={state} setAutomation={setRelayAutomation} busy={busy} large/><Events state={state}/></div><Panel title="Voltage-to-Relay Overview" icon="balance"><CellGrid state={state} onSelect={setCell}/><CellWarning state={state} onSelect={setCell}/><p className="muted-text panel-note">Voltage difference: {goodCells.length?cellSpread(goodCells).toFixed(3)+' V':'Unavailable'} · {state.automatic?'Automatic relay protection enabled':'Automatic relay protection paused'}</p></Panel><VoltagePanel state={state} expanded/></div>}
 
-    {tab==='protection'&&<div className="page-stack"><ProtectionPanel state={state} extended reviewed={reviewed} onReview={review}/><TemperaturePanel state={state} expanded/><Panel title="Cell Voltage Protection" icon="cells"><CellGrid state={state} onSelect={setCell}/><CellWarning state={state} onSelect={setCell}/><p className="muted-text panel-note">Alerts activate below {LOW_VOLTAGE.toFixed(1)} V or above {MAX_SAFE_VOLTAGE.toFixed(1)} V. Temperature alerts activate below {LOW_TEMPERATURE} °C or above {HIGH_TEMPERATURE} °C.</p></Panel></div>}
+    {tab==='protection'&&<div className="page-stack"><ProtectionPanel state={state} extended reviewed={reviewed} onReview={review}/><PredictionPanel state={state}/><Panel title="Cell Voltage Protection" icon="cells"><CellGrid state={state} onSelect={setCell}/><CellWarning state={state} onSelect={setCell}/><p className="muted-text panel-note">Alerts activate below {LOW_VOLTAGE.toFixed(1)} V or above {MAX_SAFE_VOLTAGE.toFixed(1)} V. A 0 V reading always forces the matching relay OFF.</p></Panel></div>}
 
     {tab==='vehicle'&&<div className="page-stack"><VehicleControl state={state} busy={busy} setDirection={setDirection} saveRoute={saveRoute} deleteRoute={deleteRoute} notify={notify}/><div className="two-column"><VehiclePanel state={state} large/><Panel title="Vehicle Battery Monitoring" icon="battery"><div className="vehicle-reading"><BatteryGauge soc={state.soc} charging={state.chargingStatus==='Charging'}/><dl><div><dt>State of charge</dt><dd>{percent(state.soc)}</dd></div><div><dt>State of discharge</dt><dd>{percent(known?100-state.soc:null)}</dd></div><div><dt>Current</dt><dd>{Number.isFinite(state.current)?`${state.current.toFixed(3)} A`:'—'}</dd></div><div><dt>Charging state</dt><dd>{state.socStatus}</dd></div><div><dt>Discharging state</dt><dd>{state.sodStatus}</dd></div><div><dt>Direction</dt><dd>{state.direction} · {directionName(state.direction)}</dd></div><div><dt>Battery status</dt><dd>{state.batteryStatus || 'Unknown'}</dd></div></dl></div></Panel></div><VoltagePanel state={state} expanded/><ProtectionPanel state={state} onOpen={()=>navigate('protection')}/></div>}
 
-    {tab==='reports'&&<div className="page-stack"><div className="report-toolbar"><div><h2>Battery performance & health</h2><p>Review voltage behavior and charge/discharge history.</p></div><label>Voltage history <select value={range} onChange={e=>setRange(e.target.value)}><option value="60">Last 60 minutes</option><option value="15">Last 15 minutes</option><option value="session">Available history</option></select></label></div><ReportPanel state={state} onExport={exportPdf} expanded/><VoltagePanel state={state} history={selectedHistory} expanded/><CyclePanel state={state} expanded/></div>}
+    {tab==='reports'&&<div className="page-stack"><div className="report-toolbar"><div><h2>Battery performance & health</h2><p>Review Firebase voltage history, health conditions, predictions, and suggested actions.</p></div><label>Voltage history <select value={range} onChange={e=>setRange(e.target.value)}><option value="60">Last 60 minutes</option><option value="15">Last 15 minutes</option><option value="1440">Last 24 hours</option><option value="session">All Firebase history</option></select></label></div><ReportPanel state={state} onExport={exportPdf} expanded/><HistoricalDataPanel history={selectedHistory}/><PredictionPanel state={state} history={selectedHistory}/><VoltagePanel state={state} history={selectedHistory} expanded/><CyclePanel state={state} expanded/></div>}
 
     <footer className="app-footer"><span><i className="dot green"/>Firebase Realtime Database · BMS_5580</span><span>{known?`Updated ${Math.max(0,Math.floor((clock-state.updatedAt)/1000))}s ago`:'Waiting for battery telemetry'}</span></footer>
     </main>

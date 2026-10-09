@@ -1,4 +1,5 @@
 import { cellLabel, getAlerts } from './model.js';
+import { analyzeVoltages, batteryHealthFromVoltages, predictVoltageConditions, voltageCondition } from './firebaseRtdb.js';
 
 // Self-contained PDF writer. No external API, printer dialog or PDF dependency.
 const clean = text => String(text ?? '').replace(/[^\x20-\x7e]/g, '-').replace(/([\\()])/g, '\\$1');
@@ -64,7 +65,10 @@ function graph(pdf, history, weakCells, top) {
     const color = weakCells.includes(n+1) ? [0.92, 0.58, 0] : [0, 0.64, 0.57];
     const step = Math.max(1, Math.floor(history.length / 180));
     const points = history.filter((_, i) => i % step === 0);
-    for (let i = 1; i < points.length; i++) pdf.line(x(points[i-1].time), y(points[i-1].cells[n]), x(points[i].time), y(points[i].cells[n]), color, 0.8);
+    for (let i = 1; i < points.length; i++) {
+      const previous = points[i-1].cells?.[n], current = points[i].cells?.[n];
+      if (Number.isFinite(previous) && Number.isFinite(current)) pdf.line(x(points[i-1].time), y(previous), x(points[i].time), y(current), color, 0.8);
+    }
   }
   if (!history.length) pdf.text(205, top+80, 'No telemetry available.', 11);
   pdf.text(left, top+height+19, history.length ? new Date(start).toLocaleTimeString() : '-', 8);
@@ -74,66 +78,88 @@ function graph(pdf, history, weakCells, top) {
 
 export function makeReportPdf(state, history = state.history) {
   const pdf = new Pdf();
-  header(pdf, state, 'Battery overview, cell voltages and protection', 1);
+  const analysis = analyzeVoltages(state.cells);
+  const predictions = predictVoltageConditions(history);
+  const flagged = [...new Set([...(state.weakCells || []), ...(state.overVoltageCells || [])])];
+
+  header(pdf, state, 'Current battery health and voltage conditions', 1);
   pdf.text(38, 165, `SOC: ${percentage(state.soc)}     SOD: ${percentage(Number.isFinite(state.soc) ? 100-state.soc : null)}     Charging status: ${state.chargingStatus}`, 11, true);
   pdf.text(38, 190, `Automatic balancing: ${state.automatic ? 'ON' : 'OFF'} | Balancing: ${state.balancing ? 'Active' : 'Stopped'}`, 10);
-  pdf.text(38, 215, `Battery status: ${state.batteryStatus || 'Unknown'} | Low/zero-voltage batteries: ${state.weakCells.length}`, 10);
-  pdf.rect(38, 238, 519, 26, [0.92, 0.96, 0.98]);
-  pdf.text(48, 255, 'Cell', 10, true); pdf.text(218, 255, 'Voltage', 10, true); pdf.text(398, 255, 'Status', 10, true);
+  pdf.text(38, 215, `Battery health: ${state.batteryStatus || 'Unknown'} | Batteries requiring inspection: ${flagged.length}`, 10);
+  pdf.text(38, 234, `Highest battery: ${analysis.highestCells.length ? analysis.highestCells.map(cellLabel).join(', ') : 'Unavailable'}${Number.isFinite(analysis.highestVoltage) ? ` at ${analysis.highestVoltage.toFixed(3)} V` : ''}`, 10, true);
+  pdf.rect(38, 250, 519, 26, [0.92, 0.96, 0.98]);
+  pdf.text(48, 267, 'Battery', 10, true); pdf.text(185, 267, 'Voltage', 10, true); pdf.text(318, 267, 'Health condition', 10, true); pdf.text(475, 267, 'Highest', 10, true);
   state.cells.forEach((v, i) => {
-    const y = 285 + i*22;
-    pdf.text(48, y, cellLabel(i+1), 10); pdf.text(218, y, voltage(v), 10);
-    const status = state.zeroVoltageCells?.includes(i+1) ? '0 V - relay forced OFF'
-      : state.weakCells.includes(i+1) ? 'Low - inspect'
-        : Number.isFinite(v) ? 'OK' : 'Unknown';
-    pdf.text(398, y, status, 10);
+    const y = 297 + i*22;
+    const condition = voltageCondition(v);
+    pdf.text(48, y, cellLabel(i+1), 10); pdf.text(185, y, voltage(v), 10);
+    pdf.text(318, y, condition === 'No voltage' ? 'No voltage - relay OFF' : condition, 10);
+    pdf.text(475, y, analysis.highestCells.includes(i+1) ? 'YES' : '-', 10, analysis.highestCells.includes(i+1));
     pdf.line(38, y+8, 557, y+8);
   });
-  pdf.text(38, 623, 'Battery protection', 14, true);
+  pdf.text(38, 630, 'Battery protection', 14, true);
   Object.entries({ overvoltage: 'Overvoltage', undervoltage: 'Undervoltage', shortCircuit: 'Short circuit', cutoff: 'Automatic cutoff' }).forEach(([key, label], i) => {
     const status = !Number.isFinite(state.soc) ? 'Unknown' : state.protection[key] ? 'ACTIVE' : key === 'cutoff' ? 'Inactive' : 'Clear';
-    pdf.text(48, 649+i*22, `${label}: ${status}`, 10);
+    pdf.text(48, 656+i*22, `${label}: ${status}`, 10);
   });
-  pdf.text(38, 758, `Vehicle: ${state.vehicle.connected ? 'Battery connected' : 'Disconnected'} | ${state.vehicle.status}`, 10);
+  pdf.text(38, 758, 'Thresholds: low below 3.0 V | high above 3.8 V | 0 V forces relay OFF', 9);
 
-  header(pdf, state, 'Voltage trends, maintenance alerts and balancing events', 2);
-  graph(pdf, history, state.weakCells, 170);
-  pdf.text(38, 396, `History samples included: ${history.length}`, 10);
-  pdf.text(38, 431, 'Health and maintenance', 14, true);
+  header(pdf, state, 'Firebase historical voltage and health evidence', 2);
+  graph(pdf, history, flagged, 150);
+  pdf.text(38, 367, `Historical samples included: ${history.length}`, 10);
+  pdf.text(38, 397, 'Latest historical health records', 14, true);
+  pdf.rect(38, 412, 519, 24, [0.92, 0.96, 0.98]);
+  [['Date / time',48],['Health',185],['Lowest',265],['Highest battery',340],['Problems',465]].forEach(([label,x]) => pdf.text(x,428,label,8,true));
+  const historyRows = [...history].reverse().slice(0, 10);
+  if (!historyRows.length) pdf.text(48, 465, 'No Firebase historical records are available yet.', 10);
+  historyRows.forEach((record, index) => {
+    const rowAnalysis = analyzeVoltages(record.cells), health = batteryHealthFromVoltages(record.cells), y = 460 + index*29;
+    const problems = [...health.zeroVoltageCells, ...health.lowVoltageCells, ...health.overVoltageCells];
+    pdf.text(48,y,new Date(record.time).toLocaleString().slice(0,20),8);
+    pdf.text(185,y,health.batteryStatus,8,true);
+    pdf.text(265,y,voltage(rowAnalysis.lowestVoltage),8);
+    pdf.text(340,y,rowAnalysis.highestCells.length ? `${rowAnalysis.highestCells.map(n=>String(n).padStart(2,'0')).join(',')} / ${voltage(rowAnalysis.highestVoltage)}` : 'Unavailable',8);
+    pdf.text(465,y,problems.length ? problems.map(n=>String(n).padStart(2,'0')).join(', ') : 'None',8);
+    pdf.line(38,y+9,557,y+9);
+  });
+
+  header(pdf, state, 'All battery predictions and suggested actions', 3);
+  pdf.text(38, 155, '30-minute voltage condition forecast', 14, true);
+  pdf.text(38, 176, 'Trend projection is advisory; current measured voltage controls all safety actions.', 9);
+  pdf.rect(38, 190, 519, 25, [0.92, 0.96, 0.98]);
+  [['Battery',48],['Current',112],['Trend',181],['Predicted',255],['Condition',332],['Suggested action',405]].forEach(([label,x]) => pdf.text(x,207,label,8,true));
+  predictions.forEach((item,index) => {
+    const y = 237 + index*38;
+    pdf.text(48,y,cellLabel(item.number),8,true);
+    pdf.text(112,y,voltage(item.currentVoltage),8);
+    pdf.text(181,y,item.trend,8);
+    pdf.text(255,y,voltage(item.projectedVoltage),8);
+    pdf.text(332,y,item.condition,8,item.condition!=='Normal');
+    pdf.text(405,y,item.suggestion.replace(/^Battery \d+: /,'').slice(0,38),7);
+    pdf.text(405,y+12,item.suggestion.replace(/^Battery \d+: /,'').slice(38,82),7);
+    pdf.line(38,y+17,557,y+17);
+  });
+
+  header(pdf, state, 'Active alerts, device events and cycle records', 4);
+  pdf.text(38, 155, 'Active health and maintenance alerts', 14, true);
   const alerts = getAlerts(state);
-  if (!alerts.length) pdf.text(48, 456, 'No active alerts.', 10);
-  alerts.slice(0, 6).forEach((a, i) => { pdf.text(48, 456+i*37, a.title, 10, true); pdf.text(48, 471+i*37, a.detail.slice(0, 95), 9); });
-  const eventTop = Math.max(536, 461+Math.min(alerts.length, 6)*37);
-  pdf.text(38, eventTop, 'Recent balancing / device events', 13, true);
-  state.events.slice(0, Math.min(6, Math.floor((758-eventTop)/23))).forEach((e, i) => pdf.text(48, eventTop+26+i*23, `${new Date(e.time).toLocaleTimeString()} - ${e.text}`, 9));
-
-  header(pdf, state, 'Charge / discharge cycle history and degradation review', 3);
-  pdf.text(38, 165, 'Recorded cycle history', 14, true);
-  pdf.rect(38, 182, 519, 26, [0.92, 0.96, 0.98]);
-  [['Cycle',48],['Date',100],['Voltage range',225],['Charge / discharge',333],['Health',453]].forEach(([t,x]) => pdf.text(x,199,t,9,true));
-  if (!state.cycles.length) pdf.text(48, 237, 'No cycle records supplied by the data source.', 10);
-  state.cycles.slice(0, 12).forEach((cycle, i) => {
-    const y = 232+i*29;
-    pdf.text(48,y,cycle.id,9); pdf.text(100,y,new Date(cycle.date).toLocaleDateString(),9);
-    pdf.text(225,y,`${cycle.min.toFixed(2)}-${cycle.max.toFixed(2)} V`,9);
-    pdf.text(333,y,`${cycle.charge} / ${cycle.discharge} min`,9); pdf.text(453,y,cycle.health,8);
-    pdf.line(38,y+11,557,y+11);
+  if (!alerts.length) pdf.text(48, 181, 'No active alerts.', 10);
+  alerts.slice(0, 5).forEach((alert,index) => {
+    const y=181+index*35;
+    pdf.text(48,y,alert.title,9,true); pdf.text(48,y+14,alert.detail.slice(0,100),8);
   });
-  const top = Math.max(356, 240+Math.min(state.cycles.length,12)*29);
-  pdf.text(38, top, 'Degradation trend review', 14, true);
-  pdf.text(48, top+25, 'Trend indicator: number of cells flagged weak per recorded cycle.', 10);
-  pdf.text(48, top+44, 'This is a voltage-behavior indicator, not a capacity / SOH measurement.', 9);
-  const records = state.cycles.slice(-12);
-  if (records.length) {
-    const max = Math.max(1, ...records.map(c => c.weakCells.length));
-    records.forEach((c, i) => {
-      const x = 60+i*(465/records.length), h = c.weakCells.length/max*90;
-      pdf.rect(x, top+154-h, Math.min(40, 365/records.length), Math.max(1,h), [0.94, 0.63, 0]);
-      pdf.text(x, top+171, c.id, 9); pdf.text(x, top+147-h, `${c.weakCells.length}`, 9);
-    });
-    pdf.line(48,top+154,547,top+154);
-    pdf.text(48,top+193,'Cycle number / cells marked weak',9);
-  }
+  const cyclesTop = Math.max(380, 205 + Math.min(alerts.length,5)*35);
+  pdf.text(38, cyclesTop, 'Recorded charge / discharge cycles', 14, true);
+  pdf.rect(38, cyclesTop+16, 519, 25, [0.92, 0.96, 0.98]);
+  [['Cycle',48],['Date',105],['Voltage range',225],['Charge / discharge',335],['Health',465]].forEach(([label,x]) => pdf.text(x,cyclesTop+33,label,8,true));
+  if (!state.cycles.length) pdf.text(48,cyclesTop+70,'No cycle records supplied by the data source.',10);
+  state.cycles.slice(0,10).forEach((cycle,index) => {
+    const y=cyclesTop+65+index*27;
+    pdf.text(48,y,cycle.id,8); pdf.text(105,y,new Date(cycle.date).toLocaleDateString(),8);
+    pdf.text(225,y,`${cycle.min.toFixed(2)}-${cycle.max.toFixed(2)} V`,8);
+    pdf.text(335,y,`${cycle.charge} / ${cycle.discharge} min`,8); pdf.text(465,y,cycle.health,8);
+    pdf.line(38,y+9,557,y+9);
+  });
   return pdf.finish();
 }
 

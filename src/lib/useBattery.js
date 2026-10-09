@@ -1,15 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { addEvent, createInitialState } from './model.js';
 import {
-  applyFirebaseEvent, firebaseSnapshotToTelemetry, FIREBASE_ROOT,
-  LOW_VOLTAGE, RECOVERY_VOLTAGE, relayIsOn, relayTargets, subscribeDatabase, writeDatabase
+  applyFirebaseEvent, firebaseSnapshotToTelemetry, FIREBASE_ROOT, historyRecord,
+  LOW_VOLTAGE, normalizeHistory, RECOVERY_VOLTAGE, relayIsOn, relayTargets, subscribeDatabase, writeDatabase
 } from './firebaseRtdb.js';
+
+const HISTORY_INTERVAL_MS = 60000;
+
+function mergeHistory(...groups) {
+  const byTime = new Map();
+  groups.flat().forEach(point => {
+    if (Number.isFinite(point?.time) && Array.isArray(point?.cells)) byTime.set(point.time, point);
+  });
+  return [...byTime.values()].sort((a, b) => a.time - b.time).slice(-5000);
+}
 
 const unavailableState = () => ({
   ...createInitialState(), mode: 'firebase', connection: 'connecting',
   cells: Array(14).fill(null), relays: Array(14).fill(null), soc: null,
   weakCells: [], history: [], cycles: [], events: [], direction: 'S',
-  current: null, chargingVoltage: null, temperature: null, socStatus: 'UNKNOWN', sodStatus: 'UNKNOWN',
+  current: null, chargingVoltage: null, socStatus: 'UNKNOWN', sodStatus: 'UNKNOWN',
   batteryOk: null, batteryStatus: 'Unknown', zeroVoltageCells: [], lowVoltageCells: [], overVoltageCells: [],
   led: false, routes: [], automatic: true, balancing: false,
   chargingStatus: 'Unknown', vehicle: { connected: false, status: 'Unknown' }
@@ -22,6 +32,8 @@ export default function useBattery(notify) {
   const automation = useRef(true);
   const relayWrite = useRef(false);
   const pendingRelayTelemetry = useRef(null);
+  const lastHistoryBucket = useRef(null);
+  const historyWriteWarning = useRef(false);
 
   const syncRelays = useCallback(async telemetry => {
     pendingRelayTelemetry.current = telemetry;
@@ -60,13 +72,28 @@ export default function useBattery(notify) {
         raw.current = applyFirebaseEvent(raw.current, event);
         const now = Date.now();
         const telemetry = firebaseSnapshotToTelemetry(raw.current, { automatic: automation.current });
-        queueMicrotask(() => syncRelays(telemetry));
+        const isHistoryEvent = event.path === '/History' || event.path.startsWith('/History/');
+        if (!isHistoryEvent) queueMicrotask(() => syncRelays(telemetry));
         setState(current => {
-          const history = telemetry.cells.some(Number.isFinite) || Number.isFinite(telemetry.temperature)
-            ? [...current.history, { time: now, cells: telemetry.cells, soc: telemetry.soc, temperature: telemetry.temperature }].filter(point => point.time >= now - 3600000).slice(-1900)
-            : current.history;
+          const storedHistory = normalizeHistory(raw.current?.History);
+          const livePoint = !isHistoryEvent && telemetry.cells.some(Number.isFinite)
+            ? [{ time: now, cells: [...telemetry.cells], soc: telemetry.soc }]
+            : [];
+          const history = mergeHistory(storedHistory, current.history, livePoint);
           return { ...current, ...telemetry, connection: 'connected', updatedAt: now, history };
         });
+        if (!isHistoryEvent && telemetry.cells.some(Number.isFinite)) {
+          const bucket = Math.floor(now / HISTORY_INTERVAL_MS);
+          if (lastHistoryBucket.current !== bucket) {
+            lastHistoryBucket.current = bucket;
+            writeDatabase(`${FIREBASE_ROOT}/History/${bucket}`, historyRecord(telemetry, now)).then(() => {
+              historyWriteWarning.current = false;
+            }).catch(error => {
+              if (!historyWriteWarning.current) notify(`Historical data could not be stored. Check Firebase Rules. ${error.message}`, 'error');
+              historyWriteWarning.current = true;
+            });
+          }
+        }
       }
     });
     return () => { disposed = true; unsubscribe(); };
