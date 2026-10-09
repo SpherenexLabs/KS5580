@@ -4,9 +4,10 @@ export function createInitialState(now = Date.now()) {
   const history = Array.from({ length: 61 }, (_, i) => ({
     time: now - (60 - i) * 60000,
     cells: INITIAL_VOLTAGES.map((v, n) => Number((v + Math.sin(i * 0.3 + n) * 0.009).toFixed(3))),
-    soc: Number((80 - i / 30).toFixed(2))
+    soc: Number((80 - i / 30).toFixed(2)),
+    temperature: Number((25 + Math.sin(i * 0.18) * 1.6).toFixed(1))
   }));
-  history[60] = { time: now, cells: [...INITIAL_VOLTAGES], soc: 78 };
+  history[60] = { time: now, cells: [...INITIAL_VOLTAGES], soc: 78, temperature: 25 };
   return {
     mode: 'demo', connection: 'connected', updatedAt: now,
     cells: [...INITIAL_VOLTAGES], soc: 78, automatic: true, balancing: true,
@@ -14,7 +15,7 @@ export function createInitialState(now = Date.now()) {
     batteryOk: false, batteryStatus: 'Attention', zeroVoltageCells: [], lowVoltageCells: [], overVoltageCells: [],
     protection: { overvoltage: false, undervoltage: false, shortCircuit: false, cutoff: false },
     vehicle: { connected: true, status: 'Stationary' }, direction: 'S',
-    relays: Array(14).fill(0), routes: [], current: 0, chargingVoltage: 0,
+    relays: Array(14).fill(0), routes: [], current: 0, chargingVoltage: 0, temperature: 25,
     socStatus: 'NOT CHARGING', sodStatus: 'IDLE', led: false,
     history, events: [{ time: now, text: 'Automatic balancing enabled', kind: 'info' }],
     cycles: [
@@ -90,6 +91,8 @@ export function getAlerts(state) {
   for (const number of zeroCells) alerts.unshift({ id: `zero-${number}`, kind: 'danger', title: `No voltage: ${cellLabel(number)}`, detail: `0 V detected. Relay ${number} is forced OFF for safety.` });
   const names = { overvoltage: 'Overvoltage detected', undervoltage: 'Undervoltage detected', shortCircuit: 'Short circuit detected', cutoff: 'Automatic cutoff active' };
   for (const key of Object.keys(names)) if (state.protection[key]) alerts.unshift({ id: key, kind: 'danger', title: names[key], detail: 'Battery protection is active. Check the battery system.' });
+  if (Number.isFinite(state.temperature) && state.temperature < 20) alerts.unshift({ id: 'temperature-low', kind: 'warning', title: 'Low temperature detected', detail: `${state.temperature.toFixed(1)} °C is below the 20 °C safe limit.` });
+  if (Number.isFinite(state.temperature) && state.temperature > 30) alerts.unshift({ id: 'temperature-high', kind: 'danger', title: 'High temperature detected', detail: `${state.temperature.toFixed(1)} °C is above the 30 °C safe limit.` });
   if (state.mode !== 'demo' && state.connection !== 'connected') alerts.unshift({ id: 'connection', kind: 'warning', title: 'Live telemetry unavailable', detail: 'Displayed readings may be stale. Firebase commands are disabled until telemetry resumes.' });
   return alerts;
 }

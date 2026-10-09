@@ -9,7 +9,7 @@ const unavailableState = () => ({
   ...createInitialState(), mode: 'firebase', connection: 'connecting',
   cells: Array(14).fill(null), relays: Array(14).fill(null), soc: null,
   weakCells: [], history: [], cycles: [], events: [], direction: 'S',
-  current: null, chargingVoltage: null, socStatus: 'UNKNOWN', sodStatus: 'UNKNOWN',
+  current: null, chargingVoltage: null, temperature: null, socStatus: 'UNKNOWN', sodStatus: 'UNKNOWN',
   batteryOk: null, batteryStatus: 'Unknown', zeroVoltageCells: [], lowVoltageCells: [], overVoltageCells: [],
   led: false, routes: [], automatic: true, balancing: false,
   chargingStatus: 'Unknown', vehicle: { connected: false, status: 'Unknown' }
@@ -62,8 +62,8 @@ export default function useBattery(notify) {
         const telemetry = firebaseSnapshotToTelemetry(raw.current, { automatic: automation.current });
         queueMicrotask(() => syncRelays(telemetry));
         setState(current => {
-          const history = telemetry.cells.some(Number.isFinite)
-            ? [...current.history, { time: now, cells: telemetry.cells, soc: telemetry.soc }].filter(point => point.time >= now - 3600000).slice(-1900)
+          const history = telemetry.cells.some(Number.isFinite) || Number.isFinite(telemetry.temperature)
+            ? [...current.history, { time: now, cells: telemetry.cells, soc: telemetry.soc, temperature: telemetry.temperature }].filter(point => point.time >= now - 3600000).slice(-1900)
             : current.history;
           return { ...current, ...telemetry, connection: 'connected', updatedAt: now, history };
         });

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createInitialState, applyDemoCommand, tickDemo, applyTelemetry, validateTelemetry, cellSpread, getAlerts } from '../src/lib/model.js';
 import { makeReportPdf } from '../src/lib/exportPdf.js';
-import { applyFirebaseEvent, batteryHealthFromVoltages, batterySocFromVoltages, firebaseSnapshotToTelemetry, normalizeSteps, relayTargets, voltageToSoc } from '../src/lib/firebaseRtdb.js';
+import { applyFirebaseEvent, batteryHealthFromVoltages, batterySocFromVoltages, firebaseSnapshotToTelemetry, HIGH_TEMPERATURE, LOW_TEMPERATURE, MAX_SAFE_VOLTAGE, normalizeSteps, relayTargets, voltageToSoc } from '../src/lib/firebaseRtdb.js';
 
 const now = 1791263400000;
 const telemetry = () => ({
@@ -97,15 +97,27 @@ test('PDF handles unavailable telemetry without presenting NaN values', () => {
   assert.doesNotMatch(text,/NaN|Infinity/);
 });
 
-test('Firebase voltage, relay, current and charge-state keys map correctly', () => {
+test('Firebase voltage, relay, temperature, current and charge-state keys map correctly', () => {
   const Voltage={}, Relay={};
   for(let i=1;i<=14;i++){Voltage[`V${i}`]=i===10?2.9:3.8;Relay[`Relay${i}`]=1;}
-  const state=firebaseSnapshotToTelemetry({Voltage,Relay,Current:0.74369,ChargingVoltage:12.4,SOC_Status:'NOT CHARGING',SOD_Status:'IDLE',Vehicle:{Direction:'L'}},{automatic:true});
+  const state=firebaseSnapshotToTelemetry({Voltage,Relay,Temp:26.7,Current:0.74369,ChargingVoltage:12.4,SOC_Status:'NOT CHARGING',SOD_Status:'IDLE',Vehicle:{Direction:'L'}},{automatic:true});
   assert.equal(state.cells[9],2.9); assert.equal(state.relays[13],1);
   assert.deepEqual(state.weakCells,[10]); assert.equal(state.direction,'L');
   assert.equal(state.current,0.74369); assert.equal(state.chargingVoltage,12.4);
+  assert.equal(state.temperature,26.7);
   assert.equal(state.socStatus,'NOT CHARGING'); assert.equal(state.sodStatus,'IDLE');
   assert.equal(state.chargingStatus,'Idle');
+});
+
+test('requested voltage and temperature alert boundaries are strict', () => {
+  const atVoltage=batteryHealthFromVoltages(Array(14).fill(MAX_SAFE_VOLTAGE));
+  assert.deepEqual(atVoltage.overVoltageCells,[]);
+  const above=Array(14).fill(MAX_SAFE_VOLTAGE); above[2]=MAX_SAFE_VOLTAGE+0.01;
+  assert.deepEqual(batteryHealthFromVoltages(above).overVoltageCells,[3]);
+  assert.equal(getAlerts({...createInitialState(now),temperature:LOW_TEMPERATURE}).some(alert=>alert.id==='temperature-low'),false);
+  assert.equal(getAlerts({...createInitialState(now),temperature:LOW_TEMPERATURE-0.1}).some(alert=>alert.id==='temperature-low'),true);
+  assert.equal(getAlerts({...createInitialState(now),temperature:HIGH_TEMPERATURE}).some(alert=>alert.id==='temperature-high'),false);
+  assert.equal(getAlerts({...createInitialState(now),temperature:HIGH_TEMPERATURE+0.1}).some(alert=>alert.id==='temperature-high'),true);
 });
 
 test('relay automation cuts low cells, restores recovered cells, and holds in hysteresis band', () => {

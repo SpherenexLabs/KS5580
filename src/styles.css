@@ -114,6 +114,11 @@ h1, h2, p { margin: 0; }
 .cell-tile.weak strong, .cell-tile.weak .cell-status { color: #a35200; }
 .cell-tile.weak .mini-track { background: #f3e7d1; }
 .cell-tile.weak .mini-track > span { background: linear-gradient(90deg,#f1a00b,#e99300); }
+.cell-tile.over { background: linear-gradient(120deg,#fff8f8,#fff0f2); border-color: #ffbdc7; }
+.cell-tile.over:hover { border-color: #d92e49; }
+.cell-tile.over strong, .cell-tile.over .cell-status { color: #c32642; }
+.cell-tile.over .mini-track { background: #f5dbe0; }
+.cell-tile.over .mini-track > span { background: linear-gradient(90deg,#f05b68,#d92e49); }
 .cell-tile.zero { background: linear-gradient(120deg,#fff7f8,#fff0f2); border-color: #ffc0c9; }
 .cell-tile.zero:hover { border-color: #cf3048; }
 .cell-tile.zero strong, .cell-tile.zero .cell-status { color: #bd263e; }
@@ -142,6 +147,15 @@ h1, h2, p { margin: 0; }
 .control-buttons { display: flex; gap: 9px; }
 .control-buttons .button { font-size: 11px; padding: 10px 8px; gap: 6px; flex: 1; }
 .charts-row { grid-column: 1/-1; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.temperature-panel { grid-column: 1/-1; }
+.temperature-heading { display: flex; align-items: center; gap: 10px; }
+.temperature-heading > strong { color: #e25b33; font-size: 20px; font-variant-numeric: tabular-nums; }
+.temperature-limits { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px 24px; color: var(--muted); font-size: 11px; }
+.temperature-limits span { display: inline-flex; align-items: center; gap: 6px; }
+.temperature-limits i { width: 9px; height: 9px; border-radius: 50%; }
+.temp-low-dot { background: #2687d8; }
+.temp-normal-dot { background: #00bda4; }
+.temp-high-dot { background: #dc354f; }
 .chart-panel { padding-bottom: 10px; }
 .chart-panel .panel-heading { margin-bottom: 8px; }
 .chart { width: 100%; display: block; overflow: visible; }
@@ -270,6 +284,21 @@ h1, h2, p { margin: 0; }
 .report-note { text-align: center; margin-top: 16px; }
 .chart-footnote { margin: 0 35px 10px; text-align: center; }
 .modal-backdrop { position: fixed; inset: 0; background: #102a47aa; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(3px); }
+.safety-backdrop { z-index: 110; background: #07131ed9; backdrop-filter: blur(8px); }
+.safety-alert-dialog { position: relative; display: grid; grid-template-columns: minmax(260px,.9fr) minmax(300px,1.1fr); align-items: center; width: min(850px,100%); min-height: 430px; overflow: hidden; border: 1px solid #ffffff3d; border-radius: 24px; color: white; background: radial-gradient(circle at 20% 45%,#d6293d33,transparent 42%),linear-gradient(135deg,#172c40,#09151f); box-shadow: 0 30px 100px #0009,0 0 60px #ff334f22; animation: safety-arrive .35s ease-out; }
+.safety-alert-dialog.low-voltage { background: radial-gradient(circle at 20% 45%,#ff9d1733,transparent 42%),linear-gradient(135deg,#172c40,#09151f); box-shadow: 0 30px 100px #0009,0 0 60px #ff9d1722; }
+.safety-alert-dialog.low-temperature { background: radial-gradient(circle at 20% 45%,#229cff33,transparent 42%),linear-gradient(135deg,#172c40,#09151f); box-shadow: 0 30px 100px #0009,0 0 60px #229cff22; }
+.safety-alert-scene { width: 100%; height: 390px; min-width: 0; }
+.safety-alert-scene canvas { display: block; width: 100% !important; height: 100% !important; }
+.safety-alert-copy { padding: 48px 52px 48px 22px; }
+.safety-alert-kicker { display: block; margin-bottom: 14px; font-size: 12px; font-weight: 800; letter-spacing: 2px; }
+.safety-alert-copy h2 { font-size: clamp(29px,4vw,48px); line-height: .98; letter-spacing: -1.5px; }
+.safety-alert-value { display: block; margin-top: 20px; font-size: 38px; font-variant-numeric: tabular-nums; }
+.safety-alert-copy p { max-width: 430px; margin: 13px 0 28px; color: #c6d6e3; font-size: 15px; line-height: 1.65; }
+.safety-alert-copy .button { min-height: 44px; padding: 10px 20px; }
+.safety-close { position: absolute; top: 15px; right: 15px; z-index: 2; color: white; background: #ffffff14; font-size: 26px; }
+.safety-close:hover { background: #ffffff25; }
+@keyframes safety-arrive { from { opacity: 0; transform: translateY(18px) scale(.97); } }
 .cell-dialog { background: #f7faff; border: 1px solid white; border-radius: 16px; padding: 24px; width: min(740px,100%); max-height: 95vh; overflow-y: auto; box-shadow: 0 20px 80px #071b4433; }
 .dialog-top { display: flex; justify-content: space-between; align-items: center; }
 .dialog-top h2 { font-size: 23px; }
@@ -668,4 +697,10 @@ h1, h2, p { margin: 0; }
   .direction-live, .saved-routes article { align-items: flex-start; flex-direction: column; }
   .joystick { grid-template-columns: repeat(3, minmax(68px, 84px)); }
   .joystick-button { min-height: 64px; }
+  .safety-alert-dialog { display: block; min-height: 0; max-height: 94vh; overflow-y: auto; border-radius: 18px; }
+  .safety-alert-scene { height: 235px; }
+  .safety-alert-copy { padding: 0 25px 30px; text-align: center; }
+  .safety-alert-copy h2 { font-size: 31px; }
+  .safety-alert-value { font-size: 31px; }
+  .safety-alert-copy p { font-size: 13px; }
 }

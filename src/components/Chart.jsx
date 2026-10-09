@@ -1,6 +1,6 @@
 import React from 'react';
 
-export default function Chart({ series = [], height = 154, min = 3.2, max = 4.4, xLabel = 'Time (min)', compact = false, title = 'Voltage history' }) {
+export default function Chart({ series = [], height = 154, min = 3.2, max = 4.4, xLabel = 'Time (min)', yLabel = 'Voltage (V)', compact = false, title = 'Voltage history' }) {
   const w = 630, h = 190, left = 47, right = 12, top = 10, bottom = 39;
   const plotW = w - left - right, plotH = h - top - bottom;
   const values = series.flatMap(s => s.points.map(p => p.x));
@@ -18,10 +18,19 @@ export default function Chart({ series = [], height = 154, min = 3.2, max = 4.4,
     })}
     <path d={`M${left} ${top}V${h-bottom}H${w-right}`} className="axis-line"/>
     {series.map((s, n) => <path key={s.id || n} d={s.points.filter(p => Number.isFinite(p.y)).map((p, i) => `${i ? 'L' : 'M'}${x(p.x).toFixed(2)} ${y(p.y).toFixed(2)}`).join(' ')} stroke={s.color || '#00bba5'} opacity={s.opacity || 1} strokeWidth={s.width || 1.65} fill="none"><title>{s.label || 'Cell voltage'}</title></path>)}
-    <text transform={`translate(13 ${top+plotH/2}) rotate(-90)`} textAnchor="middle">Voltage (V)</text>
+    <text transform={`translate(13 ${top+plotH/2}) rotate(-90)`} textAnchor="middle">{yLabel}</text>
     <text x={left+plotW/2} y={h-3} textAnchor="middle">{xLabel}</text>
     {!values.length && <text x={left+plotW/2} y={top+plotH/2} textAnchor="middle">Waiting for telemetry</text>}
   </svg>;
+}
+
+export function temperatureSeries(history) {
+  if (!history.some(point => Number.isFinite(point.temperature))) return [];
+  const start = history[0].time;
+  return [{
+    id: 'temperature', label: 'Battery temperature', color: '#ef6c3e', width: 2.4,
+    points: history.filter(point => Number.isFinite(point.temperature)).map(point => ({ x: (point.time - start) / 60000, y: point.temperature }))
+  }];
 }
 
 export function historySeries(history, weakCells, onlyCell) {

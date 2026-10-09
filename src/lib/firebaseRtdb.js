@@ -12,7 +12,9 @@ export const firebaseConfig = Object.freeze({
 export const FIREBASE_ROOT = 'BMS_5580';
 export const LOW_VOLTAGE = 3;
 export const RECOVERY_VOLTAGE = 3.1;
-export const MAX_SAFE_VOLTAGE = 4.25;
+export const MAX_SAFE_VOLTAGE = 3.8;
+export const LOW_TEMPERATURE = 20;
+export const HIGH_TEMPERATURE = 30;
 export const ZERO_VOLTAGE = 0;
 export const EMPTY_VOLTAGE = 0;
 export const FULL_VOLTAGE = 4.2;
@@ -71,6 +73,12 @@ function asNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(number) && number >= 0 && number <= 6 ? number : null;
+}
+
+function asTemperature(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(number) && number >= -100 && number <= 200 ? number : null;
 }
 
 export function numberedValues(node, prefix, count = 14) {
@@ -182,6 +190,7 @@ export function firebaseSnapshotToTelemetry(data, previous = {}) {
   const current = Number.isFinite(currentValue) ? currentValue : null;
   const chargingVoltageValue = Number(data?.ChargingVoltage);
   const chargingVoltage = Number.isFinite(chargingVoltageValue) ? chargingVoltageValue : null;
+  const temperature = asTemperature(data?.Temp);
   const cleanStatus = value => typeof value === 'string' && value.trim() ? value.trim().slice(0, 60).toUpperCase() : 'UNKNOWN';
   const socStatus = cleanStatus(data?.SOC_Status);
   const sodStatus = cleanStatus(data?.SOD_Status);
@@ -193,7 +202,7 @@ export function firebaseSnapshotToTelemetry(data, previous = {}) {
     ? String(data.Vehicle.Direction).toUpperCase() : 'S';
   const status = { F: 'Moving forward', B: 'Moving backward', L: 'Turning left', R: 'Turning right', S: 'Stationary' }[direction];
   return {
-    cells, relays, soc, weakCells, ...health, current, chargingVoltage, socStatus, sodStatus, led: Number(data?.LED) === 1,
+    cells, relays, soc, weakCells, ...health, current, chargingVoltage, temperature, socStatus, sodStatus, led: Number(data?.LED) === 1,
     chargingStatus,
     protection: { overvoltage: health.overVoltageCells.length > 0, undervoltage: weakCells.length > 0, shortCircuit: false, cutoff: relays.some(relayIsOff) },
     direction,
